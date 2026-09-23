@@ -177,6 +177,7 @@ private struct SettingsView: View {
     @EnvironmentObject private var link: BLELink
     @ObservedObject private var settings = Settings.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var probe: String?
 
     var body: some View {
         NavigationStack {
@@ -186,6 +187,21 @@ private struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Toggle("Motorcycle routing", isOn: $settings.twoWheeler)
+                    // The SDK will not say what is wrong with a key, so ask the
+                    // REST endpoint, which answers in plain words. Worth having
+                    // here rather than only after a failed route: a key can be
+                    // checked standing still, before it matters.
+                    Button("Check this key with Google") {
+                        probe = "checking…"
+                        KeyProbe.run { probe = $0 }
+                    }
+                    .disabled(!settings.hasKey)
+                    if let probe {
+                        Text(probe)
+                            .font(.footnote)
+                            .foregroundStyle(probe.hasPrefix("Routes works") ? Color.green : Color.red)
+                            .textSelection(.enabled)
+                    }
                 } header: {
                     Text("Google")
                 } footer: {

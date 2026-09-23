@@ -127,6 +127,13 @@ final class Navigator: NSObject, ObservableObject {
         // actual reason, which is the only useful part of the failure.
         let reason = message.map { "\($0) " } ?? ""
         message = reason + "Using Apple routing for this trip."
+        // The SDK reports every key, project and billing failure as the same
+        // numbered internal error, which is what turned this into guesswork.
+        // Ask Google over plain HTTPS instead and put its own words on screen,
+        // so the setting that needs changing is named rather than hunted for.
+        KeyProbe.run { [weak self] line in
+            self?.message = "Google says: " + line
+        }
         if let loc = lastLocation { update(with: loc) }
     }
 
