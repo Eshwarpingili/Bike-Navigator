@@ -8,20 +8,31 @@ struct ContentView: View {
     @State private var showSearch = false
     @State private var showSettings = false
 
+    /// Google's own map once a key is set - it is the same view the navigator
+    /// is attached to, so the route and position it draws are the ones guiding
+    /// the board. Apple's map is the fallback when there is no key.
+    @ViewBuilder private var mapLayer: some View {
+        if Settings.shared.hasKey {
+            GoogleMapScreen().ignoresSafeArea()
+        } else {
+            Map(position: $camera) {
+                UserAnnotation()
+                if let route = nav.route {
+                    MapPolyline(route.polyline).stroke(.blue, lineWidth: 6)
+                }
+                if let destination = nav.destination {
+                    Marker(destination.name ?? "Destination", coordinate: destination.placemark.coordinate)
+                }
+            }
+            .mapControls {
+                MapUserLocationButton()
+                MapCompass()
+            }
+        }
+    }
+
     var body: some View {
-        Map(position: $camera) {
-            UserAnnotation()
-            if let route = nav.route {
-                MapPolyline(route.polyline).stroke(.blue, lineWidth: 6)
-            }
-            if let destination = nav.destination {
-                Marker(destination.name ?? "Destination", coordinate: destination.placemark.coordinate)
-            }
-        }
-        .mapControls {
-            MapUserLocationButton()
-            MapCompass()
-        }
+        mapLayer
         .safeAreaInset(edge: .top) {
             HStack {
                 LinkBadge(state: link.state)

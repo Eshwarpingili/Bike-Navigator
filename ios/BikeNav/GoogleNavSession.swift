@@ -5,9 +5,9 @@ import GoogleNavigation
 
 /// Turn-by-turn from Google, forwarded to the bike display.
 ///
-/// Uses a headless navigation session rather than a map view: the board draws
-/// the arrow, so there is nothing to render on the phone, and a session without
-/// a view keeps working with the phone locked in a pocket.
+/// Drives the shared navigation-enabled map view's navigator. A headless
+/// session is documented as supported but does not work in practice: with no
+/// view attached, every route comes back as internalError.
 ///
 /// Google's SDK owns the hard parts - matching position to the route, deciding
 /// when a step is done, and rerouting after a missed turn. This class only
@@ -32,7 +32,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
     var onGiveUp: (() -> Void)?
 
     private let link: BLELink
-    private var session: GMSNavigationSession?
+    private var navigator: GMSNavigator?
     private var lastSent: Guidance?
     private var updates = 0
     private var sessionMade = false
@@ -74,22 +74,28 @@ final class GoogleNavSession: NSObject, ObservableObject {
 
     private func beginSession(to destination: CLLocationCoordinate2D, name: String) {
         pending = (destination, name)
-        guard let session = GMSNavigationServices.createNavigationSession() else {
-            status = "Could not start a navigation session."
+        // Navigation runs through the shared map view's navigator, not a
+        // headless session: without an attached view the navigator never
+        // initialises properly and answers every route with internalError.
+        GoogleMap.shared.view()
+        GoogleMap.shared.enableNavigation()
+        guard let navigator = GoogleMap.shared.navigator else {
+            status = "Could not start navigation - check the API key in Settings."
+            report()
+            onGiveUp?()
             return
         }
-        self.session = session
+        self.navigator = navigator
         sessionMade = true
         report()
-        session.isStarted = true
-        session.navigator?.add(self)
-        session.navigator?.sendsBackgroundNotifications = true
+        navigator.add(self)
+        navigator.sendsBackgroundNotifications = true
 
         requestRoute(to: destination, name: name)
     }
 
     private func requestRoute(to destination: CLLocationCoordinate2D, name: String) {
-        guard let session else { return }
+        guard let navigator else { return }
         guard let waypoint = GMSNavigationWaypoint(location: destination, title: name) else {
             status = "That destination could not be used."
             return
@@ -109,7 +115,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
             self.onGiveUp?()
         }
 
-        session.navigator?.setDestinations([waypoint]) { [weak self] routeStatus in
+        navigator.setDestinations([waypoint]) { [weak self] routeStatus in
             guard let self else { return }
             self.watchdog?.invalidate()
             self.routeReplied = "\(routeStatus.rawValue)"
@@ -132,7 +138,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
                 self.onGiveUp?()
                 return
             }
-            self.session?.navigator?.isGuidanceActive = true
+            self.navigator?.isGuidanceActive = true
             self.isGuiding = true
             self.routeOK = true
             self.status = nil
@@ -143,10 +149,10 @@ final class GoogleNavSession: NSObject, ObservableObject {
     func stop() {
         watchdog?.invalidate()
         watchdog = nil
-        session?.navigator?.isGuidanceActive = false
-        session?.navigator?.clearDestinations()
-        session?.isStarted = false
-        session = nil
+        navigator?.isGuidanceActive = false
+        navigator?.clearDestinations()
+        navigator?.remove(self)
+        navigator = nil
         isGuiding = false
         lastSent = nil
         link.send(Packet.idle, force: true)
