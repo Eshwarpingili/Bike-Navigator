@@ -85,8 +85,11 @@ final class Navigator: NSObject, ObservableObject {
         // route and reroutes, which is the part worth not writing by hand. The
         // MapKit path stays as the fallback for when there is no key.
         if Settings.shared.hasKey, let coordinate = destination?.placemark.coordinate {
-            google = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
-            google?.start(to: coordinate, name: destination?.name ?? "Destination")
+            let session = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
+            session.onGuidance = { [weak self] g in self?.guidance = g }
+            session.onStatus = { [weak self] text in self?.message = text }
+            google = session
+            session.start(to: coordinate, name: destination?.name ?? "Destination")
             return
         }
         if let loc = lastLocation { update(with: loc) }

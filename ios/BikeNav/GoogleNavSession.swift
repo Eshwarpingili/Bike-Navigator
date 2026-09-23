@@ -14,7 +14,16 @@ import GoogleNavigation
 /// translates its output into the packet the firmware expects.
 final class GoogleNavSession: NSObject, ObservableObject {
     @Published private(set) var isGuiding = false
-    @Published private(set) var status: String?
+    @Published private(set) var status: String? {
+        didSet { onStatus?(status) }
+    }
+
+    /// Handed back to whoever owns this session, so the phone's own screen can
+    /// show what the board is showing. Without it the app looks stuck on
+    /// "waiting for GPS" while the board is navigating perfectly well.
+    var onGuidance: ((Guidance) -> Void)?
+    /// Errors worth showing the rider, for the same reason.
+    var onStatus: ((String?) -> Void)?
 
     private let link: BLELink
     private var session: GMSNavigationSession?
@@ -91,6 +100,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
         if let last = lastSent, last == guidance { return }
         lastSent = guidance
         link.send(Packet.navigation(guidance))
+        onGuidance?(guidance)
     }
 
     /// Applies one update from the SDK. Kept separate from the callback so the
