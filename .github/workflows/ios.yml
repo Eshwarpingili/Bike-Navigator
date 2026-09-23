@@ -33,25 +33,51 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee xcodebuild.log | grep -E "error:|warning:|\*\* BUILD"
 
+      # Xcode skips the "embed frameworks" phase when signing is off, because
+      # anything it embeds would have to be signed. The app is therefore linked
+      # against @rpath/GoogleMaps.framework with no such framework in the bundle
+      # - it installs, then dies on launch. So embed them by hand: read what the
+      # binary actually asks for and copy exactly those in.
+      - name: Embed the SDK frameworks
+        run: |
+          set -eu
+          APP="ios/build/Build/Products/Release-iphoneos/BikeNav.app"
+          mkdir -p "$APP/Frameworks"
+          otool -L "$APP/BikeNav" | awk '/@rpath\/.*\.framework\//{print $1}' \
+            | sed 's|@rpath/||; s|/.*||' | sort -u > /tmp/needed.txt
+          echo "binary asks for:"; cat /tmp/needed.txt
+          while read -r fw; do
+            [ -z "$fw" ] && continue
+            if [ -d "$APP/Frameworks/$fw" ]; then continue; fi
+            src=$(find ios/build -type d -name "$fw" -not -path "*/BikeNav.app/*" | head -1)
+            if [ -z "$src" ]; then
+              echo "::error::$fw is linked but was not found in the build output"
+              exit 1
+            fi
+            echo "embedding $src"
+            cp -R "$src" "$APP/Frameworks/"
+          done < /tmp/needed.txt
+
       - name: Check the Google SDKs are really in the bundle
         run: |
           cd ios/build/Build/Products/Release-iphoneos/BikeNav.app
           echo "--- app bundle ---"
-          du -sh . && ls -la
+          du -sh .
           echo "--- embedded frameworks ---"
           ls -la Frameworks 2>/dev/null || echo "(no Frameworks directory)"
           echo "--- what the binary links against ---"
           otool -L BikeNav | sed -n '1,40p'
-          echo "--- Google symbols present in the binary? ---"
-          if nm -u BikeNav 2>/dev/null | grep -qi -m1 "GMS"; then
-            echo "undefined GMS symbols found: the SDK must be embedded to run"
-          fi
-          # A statically linked SDK lives inside the binary; a dynamic one must
-          # appear under Frameworks. Either is fine - nothing at all is not.
-          if [ ! -d Frameworks ] && [ "$(stat -f%z BikeNav)" -lt 20000000 ]; then
-            echo "::error::Neither embedded frameworks nor a large static binary - the SDK is missing and the app would crash at launch"
-            exit 1
-          fi
+          # Every @rpath framework the binary names must now be present, or the
+          # app crashes the moment it opens - with no console to say why.
+          missing=0
+          for fw in $(otool -L BikeNav | awk '/@rpath\/.*\.framework\//{print $1}' | sed 's|@rpath/||; s|/.*||' | sort -u); do
+            if [ ! -d "Frameworks/$fw" ]; then
+              echo "::error::$fw is linked but missing from the bundle"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "all linked frameworks are embedded"
 
       - name: Package .ipa
         run: |
