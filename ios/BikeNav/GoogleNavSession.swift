@@ -94,6 +94,37 @@ final class GoogleNavSession: NSObject, ObservableObject {
         link.send(Packet.navigation(guidance))
     }
 
+    /// Applies one update from the SDK. Kept separate from the callback so the
+    /// mapping can be reasoned about without the threading around it.
+    private func apply(_ s: NavSnapshot) {
+        guard s.isNavigating else { return }
+
+        var g = Guidance(direction: Dir.straight,
+                         distance: s.distanceToStep,
+                         street: s.roadName,
+                         thenDirection: Dir.none)
+
+        if let m = s.maneuver {
+            g.direction = Self.isRoundabout(m)
+                ? Dir.roundabout(exitAngle: Self.roundaboutExitAngle(m),
+                                 leftHandTraffic: leftHandTraffic)
+                : Self.direction(for: m, leftHandTraffic: leftHandTraffic)
+        }
+        if let next = s.nextManeuver, s.distanceToStep < 400 {
+            // Only worth showing when the two turns come close together; the
+            // board draws it small, under the main arrow.
+            g.thenDirection = Self.isRoundabout(next)
+                ? Dir.roundabout(exitAngle: Self.roundaboutExitAngle(next),
+                                 leftHandTraffic: leftHandTraffic)
+                : Self.direction(for: next, leftHandTraffic: leftHandTraffic)
+        }
+        g.remaining = s.distanceToDestination
+        g.minutesLeft = s.secondsToDestination.map { Int(($0 + 30) / 60) }
+        g.rerouting = s.isRerouting
+
+        publish(g)
+    }
+
     private static func describe(_ status: GMSRouteStatus) -> String {
         switch status {
         case .OK: return ""
@@ -188,6 +219,15 @@ extension GoogleNavSession {
 // MARK: - GMSNavigatorListener
 
 extension GoogleNavSession: GMSNavigatorListener {
+    /// The live feed: called regularly while guidance is running. Everything the
+    /// board shows comes from here.
+    nonisolated func navigator(_ navigator: GMSNavigator, didUpdate navInfo: GMSNavigationNavInfo) {
+        let snapshot = NavSnapshot(navInfo)
+        Task { @MainActor in
+            self.apply(snapshot)
+        }
+    }
+
     nonisolated func navigator(_ navigator: GMSNavigator, didArriveAt waypoint: GMSNavigationWaypoint) {
         Task { @MainActor in
             var g = Guidance(direction: Dir.destination, distance: 0, street: waypoint.title,
@@ -204,5 +244,39 @@ extension GoogleNavSession: GMSNavigatorListener {
             g.rerouting = true
             self.publish(g)
         }
+    }
+}
+
+/// A plain copy of the fields we use from one SDK update.
+///
+/// The callback arrives off the main actor and the SDK's object is not safe to
+/// hold onto, so everything needed is read once, here, and passed across as
+/// values.
+private struct NavSnapshot: Sendable {
+    var isNavigating = false
+    var isRerouting = false
+    var maneuver: GMSNavigationManeuver?
+    var nextManeuver: GMSNavigationManeuver?
+    var roadName = ""
+    var distanceToStep: Double = 0
+    var distanceToDestination: Double?
+    var secondsToDestination: Double?
+
+    init(_ info: GMSNavigationNavInfo) {
+        switch info.navState {
+        case .enroute:
+            isNavigating = true
+        case .rerouting:
+            isNavigating = true
+            isRerouting = true
+        default:
+            break
+        }
+        maneuver = info.currentStep?.maneuver
+        nextManeuver = info.remainingSteps.dropFirst().first?.maneuver
+        roadName = info.currentStep?.fullRoadName ?? ""
+        distanceToStep = Double(info.distanceToCurrentStepMeters)
+        distanceToDestination = Double(info.distanceToFinalDestinationMeters)
+        secondsToDestination = Double(info.timeToFinalDestinationSeconds)
     }
 }
