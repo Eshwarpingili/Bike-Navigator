@@ -6,9 +6,9 @@ struct BikeNavApp: App {
     @StateObject private var nav: Navigator
 
     init() {
-        // Before anything else: the Google SDKs refuse every call until they
-        // have the key, and they only take it once per launch.
-        GoogleMapsSetup.start()
+        // Routing is Apple's now: no key, no account, no billing, nothing to
+        // set up before the first launch. Drop the key the Google build stored.
+        LegacyKeychain.purge()
 
         let link = BLELink()
         _link = StateObject(wrappedValue: link)

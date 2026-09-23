@@ -3,15 +3,8 @@ name: BikeNav
 options:
   bundleIdPrefix: com.eshwar
   deploymentTarget:
-    # Navigation SDK needs at least iOS 16.
+    # SwiftUI Map(position:), MapPolyline and onChange(of:) two-parameter form.
     iOS: "17.0"
-packages:
-  # Navigation SDK does the hard part: matching position to the route, advancing
-  # through steps and rerouting. Swift Package Manager only - Google stopped
-  # publishing these SDKs to CocoaPods at version 11.
-  GoogleNavigation:
-    url: https://github.com/googlemaps/ios-navigation-sdk
-    exactVersion: "11.1.0"
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -23,9 +16,6 @@ targets:
     platform: iOS
     sources: [BikeNav]
     scheme: {}
-    dependencies:
-      - package: GoogleNavigation
-        product: GoogleNavigation
     info:
       path: BikeNav/Info.plist
       properties:
@@ -40,9 +30,8 @@ targets:
         UIBackgroundModes: [location, bluetooth-central]
     settings:
       base:
-        # Must match the iOS app restriction on the Google API key exactly.
-        # Note the installed app is this plus the Apple team id, because
-        # SideStore rewrites it when re-signing - both need to be on the key.
+        # SideStore appends the Apple team id when it re-signs, so the
+        # installed app is this plus that suffix.
         PRODUCT_BUNDLE_IDENTIFIER: com.eshwar.bikenav
         # The icon comes from Assets.xcassets, which is inside sources.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

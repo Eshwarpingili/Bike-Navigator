@@ -198,7 +198,8 @@ value 67 (descriptors 68, 69), Entity Update value 71 (descriptors 72, **73**).
 
 - Touch controls — mapping corrected from measurement; awaiting confirmation on hardware
 - M4 (song on connect) — fix written; awaiting confirmation
-- Navigation source: Sygic today; Apple Maps and Google Routes are unbuilt options
+- Navigation source: decided — Apple MapKit, in the companion app. Google was built
+  and then removed; see §7
 - The iOS companion app exists in `ios/` but is unbuilt — no Mac, so it needs GitHub
   Actions plus sideloading. Not on the critical path, since nothing requires it
 
@@ -213,6 +214,7 @@ value 67 (descriptors 68, 69), Entity Update value 71 (descriptors 72, **73**).
 | **AMS over a custom protocol** | Works with every music app, needs no configuration, and cannot be broken by an app update |
 | **No album art** | AMS has no artwork field. The alternatives were a network lookup over the phone's hotspot, or the companion app. Not worth the battery or the complexity |
 | **Sygic for navigation** | It already speaks a BLE HUD protocol, so no app had to be written to get turn-by-turn working |
+| **Apple MapKit, not Google** | Google's Navigation SDK was built, debugged and working code, but Maps Platform serves nothing at all without a billing account attached — no tiles, no routes, not even inside the free tier. The requirement is zero cost with no card on file, so it was removed rather than left dormant, since an unused paid SDK in the app is how an accidental bill happens. MKDirections needs no account, no key and no quota. The price is route quality: Apple's road data, one-ways and place search are visibly weaker in India, which is the actual thing given up |
 
 ---
 

@@ -11,12 +11,7 @@ final class Navigator: NSObject, ObservableObject {
     @Published private(set) var destination: MKMapItem?
     @Published private(set) var guidance: Guidance?
     @Published private(set) var lastLocation: CLLocation?
-    /// Non-nil while Google is providing the guidance.
-    private var google: GoogleNavSession?
     @Published var message: String?
-    /// A single line saying which engine is running and how far it has got.
-    /// A sideloaded app has no console, so this is the only way to see inside.
-    @Published var debugLine: String?
     @Published var leftHandTraffic: Bool {
         didSet {
             UserDefaults.standard.set(leftHandTraffic, forKey: "leftHandTraffic")
@@ -52,7 +47,7 @@ final class Navigator: NSObject, ObservableObject {
 
         link.onReady = { [weak self] in self?.resendState() }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self, self.phase == .navigating, self.google == nil,
+            guard let self, self.phase == .navigating,
                   let g = self.guidance else { return }
             self.link.send(Packet.navigation(g))
         }
@@ -82,64 +77,17 @@ final class Navigator: NSObject, ObservableObject {
         arrivedAt = nil
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
-        // Guidance has to survive the phone locking in a pocket, and the
-        // navigation SDK will not run properly on "while using" alone.
+        // Guidance has to survive the phone locking in a pocket, which
+        // "while using" authorisation does not allow.
         if manager.authorizationStatus == .authorizedWhenInUse {
             manager.requestAlwaysAuthorization()
         }
         link.send(Packet.clock(), force: true)
 
-        // With a key, Google drives the guidance: it matches position to the
-        // route and reroutes, which is the part worth not writing by hand. The
-        // MapKit path stays as the fallback for when there is no key.
-        debugLine = Settings.shared.hasKey ? "google starting" : "apple (no API key set)"
-        if Settings.shared.hasKey, let coordinate = destination?.placemark.coordinate {
-            let session = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
-            session.onGuidance = { [weak self] g in self?.guidance = g }
-            session.onStatus = { [weak self] text in self?.message = text }
-            session.onGiveUp = { [weak self] in self?.fallBackToApple() }
-            session.onDebug = { [weak self] line in
-                guard let self else { return }
-                // Location authorisation belongs on the same line: it is the
-                // usual reason a navigation session goes quiet, and 3 (always)
-                // versus 4 (only while using) is the whole difference.
-                // The bundle id matters as much as the key: sideloaders rewrite
-                // it to keep App IDs unique, and Google then rejects a key that
-                // is restricted to the original - silently, in the SDK's case.
-                let bundle = Bundle.main.bundleIdentifier ?? "?"
-                self.debugLine = line + " loc=\(self.manager.authorizationStatus.rawValue)"
-                    + " id=\(bundle)"
-            }
-            google = session
-            session.start(to: coordinate, name: destination?.name ?? "Destination")
-            return
-        }
-        if let loc = lastLocation { update(with: loc) }
-    }
-
-    /// Google failed; carry on with Apple's routing so the board still shows
-    /// turns. Better a worse route than a blank screen halfway home.
-    private func fallBackToApple() {
-        guard google != nil else { return }
-        google?.stop()
-        google = nil
-        // Keep whatever Google said: the fallback notice was overwriting the
-        // actual reason, which is the only useful part of the failure.
-        let reason = message.map { "\($0) " } ?? ""
-        message = reason + "Using Apple routing for this trip."
-        // The SDK reports every key, project and billing failure as the same
-        // numbered internal error, which is what turned this into guesswork.
-        // Ask Google over plain HTTPS instead and put its own words on screen,
-        // so the setting that needs changing is named rather than hunted for.
-        KeyProbe.run { [weak self] line in
-            self?.message = "Google says: " + line
-        }
         if let loc = lastLocation { update(with: loc) }
     }
 
     func stop() {
-        google?.stop()
-        google = nil
         phase = .idle
         route = nil
         destination = nil
@@ -305,10 +253,6 @@ final class Navigator: NSObject, ObservableObject {
 
 extension Navigator: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        if google != nil {
-            lastLocation = locations.last ?? lastLocation
-            return // Google owns the packet stream while it is running
-        }
         guard let loc = locations.last else { return }
         lastLocation = loc
         if phase == .navigating { update(with: loc) }

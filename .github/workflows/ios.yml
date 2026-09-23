@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    # macos-26 for Xcode 26, which the Navigation SDK requires.
+    # macos-26 carries a current Xcode; nothing else pins the version now.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -21,11 +21,6 @@ jobs:
         run: |
           brew install xcodegen
           cd ios && xcodegen generate
-
-      - name: Resolve Swift packages
-        run: |
-          cd ios
-          xcodebuild -resolvePackageDependencies -project BikeNav.xcodeproj -scheme BikeNav
 
       - name: Build (unsigned)
         run: |
@@ -46,60 +41,24 @@ jobs:
             exit "$status"
           fi
 
-      # Xcode skips the "embed frameworks" phase when signing is off, because
-      # anything it embeds would have to be signed. The app is therefore linked
-      # against @rpath/GoogleMaps.framework with no such framework in the bundle
-      # - it installs, then dies on launch. So embed them by hand: read what the
-      # binary actually asks for and copy exactly those in.
-      - name: Embed the SDK frameworks
+      # Nothing is linked against @rpath any more - the Google SDKs were the
+      # only dynamic frameworks - so there is nothing to embed by hand. What
+      # can still go wrong silently is the icon: a missing or misnamed asset
+      # catalog produces a blank icon and a build that otherwise looks fine.
+      - name: Check the bundle
         run: |
           set -eu
-          APP="ios/build/Build/Products/Release-iphoneos/BikeNav.app"
-          mkdir -p "$APP/Frameworks"
-          otool -L "$APP/BikeNav" | awk '/@rpath\/.*\.framework\//{print $1}' \
-            | sed 's|@rpath/||; s|/.*||' | sort -u > /tmp/needed.txt
-          echo "binary asks for:"; cat /tmp/needed.txt
-          while read -r fw; do
-            [ -z "$fw" ] && continue
-            if [ -d "$APP/Frameworks/$fw" ]; then continue; fi
-            src=$(find ios/build -type d -name "$fw" -not -path "*/BikeNav.app/*" | head -1)
-            if [ -z "$src" ]; then
-              echo "::error::$fw is linked but was not found in the build output"
-              exit 1
-            fi
-            echo "embedding $src"
-            cp -R "$src" "$APP/Frameworks/"
-          done < /tmp/needed.txt
-
-      - name: Check the Google SDKs are really in the bundle
-        run: |
           cd ios/build/Build/Products/Release-iphoneos/BikeNav.app
-          echo "--- app bundle ---"
-          du -sh .
-          echo "--- embedded frameworks ---"
-          ls -la Frameworks 2>/dev/null || echo "(no Frameworks directory)"
-          echo "--- what the binary links against ---"
-          otool -L BikeNav | sed -n '1,40p'
-          # Every @rpath framework the binary names must now be present, or the
-          # app crashes the moment it opens - with no console to say why.
-          missing=0
-          for fw in $(otool -L BikeNav | awk '/@rpath\/.*\.framework\//{print $1}' | sed 's|@rpath/||; s|/.*||' | sort -u); do
-            if [ ! -d "Frameworks/$fw" ]; then
-              echo "::error::$fw is linked but missing from the bundle"
-              missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
-          # Surfaced as a notice because Actions logs are not visible to anyone
-          # who is not signed in, while annotations are.
-          size=$(stat -f%z BikeNav)
-          fws=$(ls Frameworks 2>/dev/null | xargs echo)
-          undef=$(nm -u BikeNav 2>/dev/null | grep -c "GMS" || true)
-          echo "::notice::binary $((size/1000000)) MB | frameworks: ${fws:-none} | undefined GMS symbols: $undef"
-          if [ "$undef" -gt 0 ] && [ -z "$fws" ]; then
-            echo "::error::the binary needs GMS symbols at runtime but no framework provides them"
+          if [ ! -f Assets.car ]; then
+            echo "::error::Assets.car is missing - the asset catalog was not compiled in"
             exit 1
           fi
+          if ! plutil -p Info.plist | grep -q CFBundleIcons; then
+            echo "::error::no app icon in the bundle - check ASSETCATALOG_COMPILER_APPICON_NAME"
+            exit 1
+          fi
+          # Actions logs need a signed-in account; annotations are public.
+          echo "::notice::binary $(( $(stat -f%z BikeNav) / 1000000 )) MB | icon present | no embedded frameworks"
 
       - name: Package .ipa
         run: |

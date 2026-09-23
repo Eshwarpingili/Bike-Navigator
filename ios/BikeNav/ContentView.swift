@@ -8,26 +8,19 @@ struct ContentView: View {
     @State private var showSearch = false
     @State private var showSettings = false
 
-    /// Google's own map once a key is set - it is the same view the navigator
-    /// is attached to, so the route and position it draws are the ones guiding
-    /// the board. Apple's map is the fallback when there is no key.
-    @ViewBuilder private var mapLayer: some View {
-        if Settings.shared.hasKey {
-            GoogleMapScreen().ignoresSafeArea()
-        } else {
-            Map(position: $camera) {
-                UserAnnotation()
-                if let route = nav.route {
-                    MapPolyline(route.polyline).stroke(.blue, lineWidth: 6)
-                }
-                if let destination = nav.destination {
-                    Marker(destination.name ?? "Destination", coordinate: destination.placemark.coordinate)
-                }
+    private var mapLayer: some View {
+        Map(position: $camera) {
+            UserAnnotation()
+            if let route = nav.route {
+                MapPolyline(route.polyline).stroke(.blue, lineWidth: 6)
             }
-            .mapControls {
-                MapUserLocationButton()
-                MapCompass()
+            if let destination = nav.destination {
+                Marker(destination.name ?? "Destination", coordinate: destination.placemark.coordinate)
             }
+        }
+        .mapControls {
+            MapUserLocationButton()
+            MapCompass()
         }
     }
 
@@ -92,9 +85,6 @@ private struct BottomPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             if let message = nav.message {
                 Text(message).font(.footnote).foregroundStyle(.red)
-            }
-            if let debug = nav.debugLine, nav.phase == .navigating {
-                Text(debug).font(.caption2.monospaced()).foregroundStyle(.secondary)
             }
             switch nav.phase {
             case .idle:
@@ -175,43 +165,11 @@ private struct GuidanceCard: View {
 private struct SettingsView: View {
     @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var link: BLELink
-    @ObservedObject private var settings = Settings.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var probe: String?
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    SecureField("Google API key", text: $settings.apiKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Toggle("Motorcycle routing", isOn: $settings.twoWheeler)
-                    // The SDK will not say what is wrong with a key, so ask the
-                    // REST endpoint, which answers in plain words. Worth having
-                    // here rather than only after a failed route: a key can be
-                    // checked standing still, before it matters.
-                    Button("Check this key with Google") {
-                        probe = "checking…"
-                        KeyProbe.run { probe = $0 }
-                    }
-                    .disabled(!settings.hasKey)
-                    if let probe {
-                        Text(probe)
-                            .font(.footnote)
-                            .foregroundStyle(probe.hasPrefix("Routes works") ? Color.green : Color.red)
-                            .textSelection(.enabled)
-                    }
-                } header: {
-                    Text("Google")
-                } footer: {
-                    // The SDK takes a key once, at launch, and ignores later
-                    // ones - so pasting it here is not enough on its own.
-                    Text(settings.hasKey
-                         ? "Saved to the keychain. Close and reopen BikeNav for a new key to take effect."
-                         : "Needed for navigation. Stored only on this phone, in the keychain.")
-                }
-
                 Section("Display") {
                     LabeledContent("Status", value: link.state.rawValue)
                     Button("Test the display") {
