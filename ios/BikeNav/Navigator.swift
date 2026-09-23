@@ -103,7 +103,12 @@ final class Navigator: NSObject, ObservableObject {
                 // Location authorisation belongs on the same line: it is the
                 // usual reason a navigation session goes quiet, and 3 (always)
                 // versus 4 (only while using) is the whole difference.
+                // The bundle id matters as much as the key: sideloaders rewrite
+                // it to keep App IDs unique, and Google then rejects a key that
+                // is restricted to the original - silently, in the SDK's case.
+                let bundle = Bundle.main.bundleIdentifier ?? "?"
                 self.debugLine = line + " loc=\(self.manager.authorizationStatus.rawValue)"
+                    + " id=\(bundle)"
             }
             google = session
             session.start(to: coordinate, name: destination?.name ?? "Destination")
