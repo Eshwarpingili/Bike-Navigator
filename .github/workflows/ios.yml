@@ -33,6 +33,26 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee xcodebuild.log | grep -E "error:|warning:|\*\* BUILD"
 
+      - name: Check the Google SDKs are really in the bundle
+        run: |
+          cd ios/build/Build/Products/Release-iphoneos/BikeNav.app
+          echo "--- app bundle ---"
+          du -sh . && ls -la
+          echo "--- embedded frameworks ---"
+          ls -la Frameworks 2>/dev/null || echo "(no Frameworks directory)"
+          echo "--- what the binary links against ---"
+          otool -L BikeNav | sed -n '1,40p'
+          echo "--- Google symbols present in the binary? ---"
+          if nm -u BikeNav 2>/dev/null | grep -qi -m1 "GMS"; then
+            echo "undefined GMS symbols found: the SDK must be embedded to run"
+          fi
+          # A statically linked SDK lives inside the binary; a dynamic one must
+          # appear under Frameworks. Either is fine - nothing at all is not.
+          if [ ! -d Frameworks ] && [ "$(stat -f%z BikeNav)" -lt 20000000 ]; then
+            echo "::error::Neither embedded frameworks nor a large static binary - the SDK is missing and the app would crash at launch"
+            exit 1
+          fi
+
       - name: Package .ipa
         run: |
           cd ios/build/Build/Products/Release-iphoneos
