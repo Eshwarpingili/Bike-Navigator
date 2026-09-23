@@ -41,6 +41,8 @@ final class GoogleNavSession: NSObject, ObservableObject {
     private var routeAsked = false
     private var routeReplied: String?
     private var watchdog: Timer?
+    private var locationTries = 0
+    private var pending: (CLLocationCoordinate2D, String)?
 
     /// India drives on the left, which changes how the board draws roundabouts.
     private let leftHandTraffic: Bool
@@ -71,6 +73,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
     }
 
     private func beginSession(to destination: CLLocationCoordinate2D, name: String) {
+        pending = (destination, name)
         guard let session = GMSNavigationServices.createNavigationSession() else {
             status = "Could not start a navigation session."
             return
@@ -82,19 +85,26 @@ final class GoogleNavSession: NSObject, ObservableObject {
         session.navigator?.add(self)
         session.navigator?.sendsBackgroundNotifications = true
 
+        requestRoute(to: destination, name: name)
+    }
+
+    private func requestRoute(to destination: CLLocationCoordinate2D, name: String) {
+        guard let session else { return }
         guard let waypoint = GMSNavigationWaypoint(location: destination, title: name) else {
             status = "That destination could not be used."
             return
         }
 
         routeAsked = true
+        routeReplied = nil
         report()
         // A request that never answers looks exactly like one that failed, so
         // put a clock on it: silence is itself a finding.
-        watchdog = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 25, repeats: false) { [weak self] _ in
             guard let self, self.routeReplied == nil else { return }
             self.routeReplied = "silent"
-            self.status = "Google never answered the route request. Check the API key allows \"Navigation SDK\" and \"Maps SDK for iOS\", not just Routes API."
+            self.status = "Google never answered the route request."
             self.report()
             self.onGiveUp?()
         }
@@ -104,6 +114,19 @@ final class GoogleNavSession: NSObject, ObservableObject {
             self.watchdog?.invalidate()
             self.routeReplied = "\(routeStatus.rawValue)"
             self.report()
+            // The SDK runs its own location provider, separate from the app's,
+            // and it has no fix in the instant after the session starts. Asking
+            // again a moment later is the whole fix; giving up here would blame
+            // Google for a race of ours.
+            if routeStatus == .locationUnavailable, self.locationTries < 6 {
+                self.locationTries += 1
+                self.report()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self, let (dest, name) = self.pending else { return }
+                    self.requestRoute(to: dest, name: name)
+                }
+                return
+            }
             guard routeStatus == .OK else {
                 self.status = Self.describe(routeStatus)
                 self.onGiveUp?()
@@ -176,7 +199,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
     private func report() {
         onDebug?("google terms=\(termsOK ? 1 : 0) session=\(sessionMade ? 1 : 0) "
                  + "asked=\(routeAsked ? 1 : 0) reply=\(routeReplied ?? "-") "
-                 + "route=\(routeOK ? 1 : 0) updates=\(updates)")
+                 + "route=\(routeOK ? 1 : 0) locwait=\(locationTries) updates=\(updates)")
     }
 
     private static func describe(_ status: GMSRouteStatus) -> String {
@@ -187,6 +210,8 @@ final class GoogleNavSession: NSObject, ObservableObject {
         case .quotaExceeded: return "Google API quota exceeded."
         case .apiKeyNotAuthorized: return "API key rejected. Check the key and its bundle ID restriction."
         case .canceled: return "Route canceled."
+        case .locationUnavailable:
+            return "Google could not get a location fix. Move somewhere with clear sky and try again."
         default:
             // Worth printing the number: the named cases do not cover
             // everything, and the raw value is what can be looked up.
