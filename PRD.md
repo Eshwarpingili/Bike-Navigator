@@ -270,7 +270,32 @@ fragile part of the whole build and the thing most likely to fail from vibration
 enclosure has to hold both boards rigidly and give that ribbon strain relief. The USB
 port and the exposed carrier also need covering against rain and road spray.
 
-### 8.5 Then
+### 8.5 Map tiles on the board itself
+
+Wanted: a moving map on the handlebar display, not only the turn arrow.
+
+The board never needs internet for this - the phone has the data, the GPS and
+the rendering. What it needs is a **pipe wide enough for pixels**, and that rules
+out the link we have: BLE manages a few KB/s, while a 320x240 JPEG is about
+12 KB and a moving map wants two to four frames a second - roughly 50 KB/s.
+
+That means Wi-Fi. Two shapes, and the second looks better:
+
+- **Phone hotspot, board joins it.** Works, but an iPhone's hotspot defaults to
+  5 GHz and this board is 2.4 GHz only - the same limit that ruled out CarPlay -
+  so "Maximize Compatibility" would have to be on every time.
+- **Board runs its own access point, phone joins it.** 2.4 GHz by definition, no
+  hotspot, and the phone keeps cellular for routing. iOS complains about Wi-Fi
+  networks with no internet, which is the part to prove out first.
+
+Firmware: join or host Wi-Fi, accept a TCP stream, decode JPEG (LVGL has a
+decoder), blit. Phone: render with the Maps SDK, already linked and free in
+India, pushing frames only while the map is on screen.
+
+Worth building **after** the turn arrows are trusted: it adds a second radio and
+a second failure mode to something that has to work in traffic.
+
+### 8.6 Then
 
 1. Progress bar for the current track, from AMS Duration and the elapsed time already
    present in PlaybackInfo — costs nothing extra over the wire
