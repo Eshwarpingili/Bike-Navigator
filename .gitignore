@@ -1,0 +1,9 @@
+third_party/
+.venv/
+firmware/build/
+firmware/build.log
+ios/build/
+ios/*.xcodeproj/
+__pycache__/
+firmware/backups/
+firmware/flash.log

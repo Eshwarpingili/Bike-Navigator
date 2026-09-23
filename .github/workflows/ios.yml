@@ -1,0 +1,46 @@
+# Builds an unsigned BikeNav.ipa on a GitHub-hosted Mac. Install it on the iPhone from
+# Windows with Sideloadly (it signs the app with your own Apple ID). See README.md.
+name: iOS app
+
+on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-26 for Xcode 26, which the Navigation SDK requires.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          cd ios
+          xcodebuild -resolvePackageDependencies -project BikeNav.xcodeproj -scheme BikeNav
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          cd ios
+          xcodebuild -project BikeNav.xcodeproj -scheme BikeNav -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log | grep -E "error:|warning:|\*\* BUILD"
+
+      - name: Package .ipa
+        run: |
+          cd ios/build/Build/Products/Release-iphoneos
+          mkdir -p Payload
+          cp -R BikeNav.app Payload/
+          zip -qry "$GITHUB_WORKSPACE/BikeNav.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BikeNav-ipa
+          path: BikeNav.ipa
