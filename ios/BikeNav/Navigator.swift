@@ -97,6 +97,7 @@ final class Navigator: NSObject, ObservableObject {
             let session = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
             session.onGuidance = { [weak self] g in self?.guidance = g }
             session.onStatus = { [weak self] text in self?.message = text }
+            session.onGiveUp = { [weak self] in self?.fallBackToApple() }
             session.onDebug = { [weak self] line in
                 guard let self else { return }
                 // Location authorisation belongs on the same line: it is the
@@ -108,6 +109,16 @@ final class Navigator: NSObject, ObservableObject {
             session.start(to: coordinate, name: destination?.name ?? "Destination")
             return
         }
+        if let loc = lastLocation { update(with: loc) }
+    }
+
+    /// Google failed; carry on with Apple's routing so the board still shows
+    /// turns. Better a worse route than a blank screen halfway home.
+    private func fallBackToApple() {
+        guard google != nil else { return }
+        google?.stop()
+        google = nil
+        message = "Google could not start - using Apple routing for this trip."
         if let loc = lastLocation { update(with: loc) }
     }
 

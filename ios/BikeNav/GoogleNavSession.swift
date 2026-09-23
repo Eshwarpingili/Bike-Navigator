@@ -27,6 +27,9 @@ final class GoogleNavSession: NSObject, ObservableObject {
     /// One line describing what the session is actually doing, for the phone to
     /// display. There is no console on a sideloaded app riding in a pocket.
     var onDebug: ((String) -> Void)?
+    /// Called when Google has plainly failed, so the caller can fall back to
+    /// something that works rather than leaving the rider with nothing.
+    var onGiveUp: (() -> Void)?
 
     private let link: BLELink
     private var session: GMSNavigationSession?
@@ -91,8 +94,9 @@ final class GoogleNavSession: NSObject, ObservableObject {
         watchdog = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
             guard let self, self.routeReplied == nil else { return }
             self.routeReplied = "silent"
-            self.status = "Google accepted the destination but never answered. Usually location permission - set Location to Always."
+            self.status = "Google never answered the route request. Check the API key allows \"Navigation SDK\" and \"Maps SDK for iOS\", not just Routes API."
             self.report()
+            self.onGiveUp?()
         }
 
         session.navigator?.setDestinations([waypoint]) { [weak self] routeStatus in
@@ -102,6 +106,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
             self.report()
             guard routeStatus == .OK else {
                 self.status = Self.describe(routeStatus)
+                self.onGiveUp?()
                 return
             }
             self.session?.navigator?.isGuidanceActive = true
