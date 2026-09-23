@@ -187,7 +187,11 @@ final class GoogleNavSession: NSObject, ObservableObject {
         case .quotaExceeded: return "Google API quota exceeded."
         case .apiKeyNotAuthorized: return "API key rejected. Check the key and its bundle ID restriction."
         case .canceled: return "Route canceled."
-        default: return "Could not get a route."
+        default:
+            // Worth printing the number: the named cases do not cover
+            // everything, and the raw value is what can be looked up.
+            return "Google refused the route (status \(status.rawValue)). If this is a key problem, check the bundle id on the key's iOS restriction."
+
         }
     }
 }

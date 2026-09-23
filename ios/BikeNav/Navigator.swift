@@ -123,7 +123,10 @@ final class Navigator: NSObject, ObservableObject {
         guard google != nil else { return }
         google?.stop()
         google = nil
-        message = "Google could not start - using Apple routing for this trip."
+        // Keep whatever Google said: the fallback notice was overwriting the
+        // actual reason, which is the only useful part of the failure.
+        let reason = message.map { "\($0) " } ?? ""
+        message = reason + "Using Apple routing for this trip."
         if let loc = lastLocation { update(with: loc) }
     }
 
