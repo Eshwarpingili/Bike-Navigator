@@ -41,6 +41,10 @@ targets:
     settings:
       base:
         # Must match the iOS app restriction on the Google API key exactly.
+        # Note the installed app is this plus the Apple team id, because
+        # SideStore rewrites it when re-signing - both need to be on the key.
         PRODUCT_BUNDLE_IDENTIFIER: com.eshwar.bikenav
+        # The icon comes from Assets.xcassets, which is inside sources.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
