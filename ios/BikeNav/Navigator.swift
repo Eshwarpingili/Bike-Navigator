@@ -14,6 +14,9 @@ final class Navigator: NSObject, ObservableObject {
     /// Non-nil while Google is providing the guidance.
     private var google: GoogleNavSession?
     @Published var message: String?
+    /// A single line saying which engine is running and how far it has got.
+    /// A sideloaded app has no console, so this is the only way to see inside.
+    @Published var debugLine: String?
     @Published var leftHandTraffic: Bool {
         didSet {
             UserDefaults.standard.set(leftHandTraffic, forKey: "leftHandTraffic")
@@ -84,10 +87,12 @@ final class Navigator: NSObject, ObservableObject {
         // With a key, Google drives the guidance: it matches position to the
         // route and reroutes, which is the part worth not writing by hand. The
         // MapKit path stays as the fallback for when there is no key.
+        debugLine = Settings.shared.hasKey ? "google starting" : "apple (no API key set)"
         if Settings.shared.hasKey, let coordinate = destination?.placemark.coordinate {
             let session = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
             session.onGuidance = { [weak self] g in self?.guidance = g }
             session.onStatus = { [weak self] text in self?.message = text }
+            session.onDebug = { [weak self] line in self?.debugLine = line }
             google = session
             session.start(to: coordinate, name: destination?.name ?? "Destination")
             return

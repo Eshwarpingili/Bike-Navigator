@@ -82,6 +82,9 @@ private struct BottomPanel: View {
             if let message = nav.message {
                 Text(message).font(.footnote).foregroundStyle(.red)
             }
+            if let debug = nav.debugLine, nav.phase == .navigating {
+                Text(debug).font(.caption2.monospaced()).foregroundStyle(.secondary)
+            }
             switch nav.phase {
             case .idle:
                 if let g = nav.guidance, nav.isDemoRunning {

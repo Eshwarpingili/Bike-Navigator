@@ -24,10 +24,17 @@ final class GoogleNavSession: NSObject, ObservableObject {
     var onGuidance: ((Guidance) -> Void)?
     /// Errors worth showing the rider, for the same reason.
     var onStatus: ((String?) -> Void)?
+    /// One line describing what the session is actually doing, for the phone to
+    /// display. There is no console on a sideloaded app riding in a pocket.
+    var onDebug: ((String) -> Void)?
 
     private let link: BLELink
     private var session: GMSNavigationSession?
     private var lastSent: Guidance?
+    private var updates = 0
+    private var sessionMade = false
+    private var termsOK = false
+    private var routeOK = false
 
     /// India drives on the left, which changes how the board draws roundabouts.
     private let leftHandTraffic: Bool
@@ -51,6 +58,8 @@ final class GoogleNavSession: NSObject, ObservableObject {
                 self.status = "Google's terms have to be accepted before navigation can run."
                 return
             }
+            self.termsOK = accepted
+            self.report()
             self.beginSession(to: destination, name: name)
         }
     }
@@ -61,6 +70,8 @@ final class GoogleNavSession: NSObject, ObservableObject {
             return
         }
         self.session = session
+        sessionMade = true
+        report()
         session.isStarted = true
         session.navigator?.add(self)
         session.navigator?.sendsBackgroundNotifications = true
@@ -78,7 +89,9 @@ final class GoogleNavSession: NSObject, ObservableObject {
             }
             self.session?.navigator?.isGuidanceActive = true
             self.isGuiding = true
+            self.routeOK = true
             self.status = nil
+            self.report()
         }
     }
 
@@ -106,6 +119,8 @@ final class GoogleNavSession: NSObject, ObservableObject {
     /// Applies one update from the SDK. Kept separate from the callback so the
     /// mapping can be reasoned about without the threading around it.
     private func apply(_ s: NavSnapshot) {
+        updates += 1
+        report()
         guard s.isNavigating else { return }
 
         var g = Guidance(direction: Dir.straight,
@@ -132,6 +147,11 @@ final class GoogleNavSession: NSObject, ObservableObject {
         g.rerouting = s.isRerouting
 
         publish(g)
+    }
+
+    private func report() {
+        onDebug?("google terms=\(termsOK ? 1 : 0) session=\(sessionMade ? 1 : 0) "
+                 + "route=\(routeOK ? 1 : 0) updates=\(updates)")
     }
 
     private static func describe(_ status: GMSRouteStatus) -> String {
