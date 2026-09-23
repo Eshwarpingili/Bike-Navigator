@@ -35,6 +35,9 @@ final class GoogleNavSession: NSObject, ObservableObject {
     private var sessionMade = false
     private var termsOK = false
     private var routeOK = false
+    private var routeAsked = false
+    private var routeReplied: String?
+    private var watchdog: Timer?
 
     /// India drives on the left, which changes how the board draws roundabouts.
     private let leftHandTraffic: Bool
@@ -81,8 +84,22 @@ final class GoogleNavSession: NSObject, ObservableObject {
             return
         }
 
+        routeAsked = true
+        report()
+        // A request that never answers looks exactly like one that failed, so
+        // put a clock on it: silence is itself a finding.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+            guard let self, self.routeReplied == nil else { return }
+            self.routeReplied = "silent"
+            self.status = "Google accepted the destination but never answered. Usually location permission - set Location to Always."
+            self.report()
+        }
+
         session.navigator?.setDestinations([waypoint]) { [weak self] routeStatus in
             guard let self else { return }
+            self.watchdog?.invalidate()
+            self.routeReplied = "\(routeStatus.rawValue)"
+            self.report()
             guard routeStatus == .OK else {
                 self.status = Self.describe(routeStatus)
                 return
@@ -96,6 +113,8 @@ final class GoogleNavSession: NSObject, ObservableObject {
     }
 
     func stop() {
+        watchdog?.invalidate()
+        watchdog = nil
         session?.navigator?.isGuidanceActive = false
         session?.navigator?.clearDestinations()
         session?.isStarted = false
@@ -151,6 +170,7 @@ final class GoogleNavSession: NSObject, ObservableObject {
 
     private func report() {
         onDebug?("google terms=\(termsOK ? 1 : 0) session=\(sessionMade ? 1 : 0) "
+                 + "asked=\(routeAsked ? 1 : 0) reply=\(routeReplied ?? "-") "
                  + "route=\(routeOK ? 1 : 0) updates=\(updates)")
     }
 

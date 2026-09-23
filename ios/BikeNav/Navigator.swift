@@ -82,6 +82,11 @@ final class Navigator: NSObject, ObservableObject {
         arrivedAt = nil
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
+        // Guidance has to survive the phone locking in a pocket, and the
+        // navigation SDK will not run properly on "while using" alone.
+        if manager.authorizationStatus == .authorizedWhenInUse {
+            manager.requestAlwaysAuthorization()
+        }
         link.send(Packet.clock(), force: true)
 
         // With a key, Google drives the guidance: it matches position to the
@@ -92,7 +97,13 @@ final class Navigator: NSObject, ObservableObject {
             let session = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
             session.onGuidance = { [weak self] g in self?.guidance = g }
             session.onStatus = { [weak self] text in self?.message = text }
-            session.onDebug = { [weak self] line in self?.debugLine = line }
+            session.onDebug = { [weak self] line in
+                guard let self else { return }
+                // Location authorisation belongs on the same line: it is the
+                // usual reason a navigation session goes quiet, and 3 (always)
+                // versus 4 (only while using) is the whole difference.
+                self.debugLine = line + " loc=\(self.manager.authorizationStatus.rawValue)"
+            }
             google = session
             session.start(to: coordinate, name: destination?.name ?? "Destination")
             return
