@@ -107,6 +107,84 @@ final class GoogleNavSession: NSObject, ObservableObject {
     }
 }
 
+// MARK: - Google's maneuvers, in the board's vocabulary
+
+extension GoogleNavSession {
+    /// Google names far more maneuvers than the board draws arrows for, so the
+    /// unmapped ones fall back to "straight on" rather than showing nothing.
+    /// Roundabouts are handled separately: the board picks its arrow from the
+    /// exit angle, and drives round the other way in left-hand traffic.
+    static func direction(for maneuver: GMSNavigationManeuver,
+                          leftHandTraffic: Bool) -> UInt8 {
+        switch maneuver {
+        case .destination, .destinationLeft, .destinationRight:
+            return Dir.destination
+        case .depart:
+            return Dir.start
+        case .turnLeft, .onRampLeft, .offRampLeft:
+            return maneuver == .turnLeft ? Dir.left : Dir.exitLeft
+        case .turnRight, .onRampRight, .offRampRight:
+            return maneuver == .turnRight ? Dir.right : Dir.exitRight
+        case .turnSlightLeft, .forkLeft:
+            return maneuver == .turnSlightLeft ? Dir.slightLeft : Dir.keepLeft
+        case .turnSlightRight, .forkRight:
+            return maneuver == .turnSlightRight ? Dir.slightRight : Dir.keepRight
+        case .turnSharpLeft:
+            return Dir.sharpLeft
+        case .turnSharpRight:
+            return Dir.sharpRight
+        case .turnUTurnClockwise:
+            return leftHandTraffic ? Dir.uTurnRight : Dir.uTurnLeft
+        case .turnUTurnCounterClockwise:
+            return leftHandTraffic ? Dir.uTurnLeft : Dir.uTurnRight
+        case .mergeLeft, .mergeUnspecified:
+            return Dir.keepLeft
+        case .mergeRight:
+            return Dir.keepRight
+        case .straight, .nameChange:
+            return Dir.straight
+        default:
+            // Includes the roundabout family, which is resolved by exit angle
+            // before this is ever consulted.
+            return Dir.straight
+        }
+    }
+
+    static func isRoundabout(_ maneuver: GMSNavigationManeuver) -> Bool {
+        switch maneuver {
+        case .roundaboutClockwise, .roundaboutCounterClockwise,
+             .roundaboutStraightClockwise, .roundaboutStraightCounterClockwise,
+             .roundaboutLeftClockwise, .roundaboutLeftCounterClockwise,
+             .roundaboutRightClockwise, .roundaboutRightCounterClockwise,
+             .roundaboutSharpLeftClockwise, .roundaboutSharpLeftCounterClockwise,
+             .roundaboutSharpRightClockwise, .roundaboutSharpRightCounterClockwise,
+             .roundaboutSlightLeftClockwise, .roundaboutSlightLeftCounterClockwise,
+             .roundaboutSlightRightClockwise, .roundaboutSlightRightCounterClockwise,
+             .roundaboutUTurnClockwise, .roundaboutUTurnCounterClockwise,
+             .roundaboutExitClockwise, .roundaboutExitCounterClockwise:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Roughly where the exit leaves the circle, relative to the way in.
+    /// Google does not give an angle, only a named turn, so this converts the
+    /// name back into one the board can draw.
+    static func roundaboutExitAngle(_ maneuver: GMSNavigationManeuver) -> Double {
+        switch maneuver {
+        case .roundaboutSharpLeftClockwise, .roundaboutSharpLeftCounterClockwise: return -135
+        case .roundaboutLeftClockwise, .roundaboutLeftCounterClockwise: return -90
+        case .roundaboutSlightLeftClockwise, .roundaboutSlightLeftCounterClockwise: return -45
+        case .roundaboutSlightRightClockwise, .roundaboutSlightRightCounterClockwise: return 45
+        case .roundaboutRightClockwise, .roundaboutRightCounterClockwise: return 90
+        case .roundaboutSharpRightClockwise, .roundaboutSharpRightCounterClockwise: return 135
+        case .roundaboutUTurnClockwise, .roundaboutUTurnCounterClockwise: return 180
+        default: return 0 // straight across
+        }
+    }
+}
+
 // MARK: - GMSNavigatorListener
 
 extension GoogleNavSession: GMSNavigatorListener {

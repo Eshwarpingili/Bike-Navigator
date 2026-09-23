@@ -161,11 +161,27 @@ private struct GuidanceCard: View {
 private struct SettingsView: View {
     @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var link: BLELink
+    @ObservedObject private var settings = Settings.shared
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    SecureField("Google API key", text: $settings.apiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Toggle("Motorcycle routing", isOn: $settings.twoWheeler)
+                } header: {
+                    Text("Google")
+                } footer: {
+                    // The SDK takes a key once, at launch, and ignores later
+                    // ones - so pasting it here is not enough on its own.
+                    Text(settings.hasKey
+                         ? "Saved to the keychain. Close and reopen BikeNav for a new key to take effect."
+                         : "Needed for navigation. Stored only on this phone, in the keychain.")
+                }
+
                 Section("Display") {
                     LabeledContent("Status", value: link.state.rawValue)
                     Button("Test the display") {
