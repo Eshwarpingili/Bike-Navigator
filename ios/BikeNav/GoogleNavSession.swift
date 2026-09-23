@@ -12,7 +12,6 @@ import GoogleNavigation
 /// Google's SDK owns the hard parts - matching position to the route, deciding
 /// when a step is done, and rerouting after a missed turn. This class only
 /// translates its output into the packet the firmware expects.
-@MainActor
 final class GoogleNavSession: NSObject, ObservableObject {
     @Published private(set) var isGuiding = false
     @Published private(set) var status: String?
@@ -221,26 +220,28 @@ extension GoogleNavSession {
 extension GoogleNavSession: GMSNavigatorListener {
     /// The live feed: called regularly while guidance is running. Everything the
     /// board shows comes from here.
-    nonisolated func navigator(_ navigator: GMSNavigator, didUpdate navInfo: GMSNavigationNavInfo) {
+    func navigator(_ navigator: GMSNavigator, didUpdate navInfo: GMSNavigationNavInfo) {
         let snapshot = NavSnapshot(navInfo)
-        Task { @MainActor in
-            self.apply(snapshot)
+        DispatchQueue.main.async { [weak self] in
+            self?.apply(snapshot)
         }
     }
 
-    nonisolated func navigator(_ navigator: GMSNavigator, didArriveAt waypoint: GMSNavigationWaypoint) {
-        Task { @MainActor in
-            var g = Guidance(direction: Dir.destination, distance: 0, street: waypoint.title,
+    func navigator(_ navigator: GMSNavigator, didArriveAt waypoint: GMSNavigationWaypoint) {
+        // Read off the SDK's object here, not inside the closure.
+        let name = waypoint.title
+        DispatchQueue.main.async { [weak self] in
+            var g = Guidance(direction: Dir.destination, distance: 0, street: name,
                              thenDirection: Dir.none)
             g.arrived = true
-            self.publish(g)
-            self.isGuiding = false
+            self?.publish(g)
+            self?.isGuiding = false
         }
     }
 
-    nonisolated func navigatorDidChangeRoute(_ navigator: GMSNavigator) {
-        Task { @MainActor in
-            guard var g = self.lastSent else { return }
+    func navigatorDidChangeRoute(_ navigator: GMSNavigator) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, var g = self.lastSent else { return }
             g.rerouting = true
             self.publish(g)
         }
