@@ -80,8 +80,7 @@ jobs:
           # Surfaced as a notice because Actions logs are not visible to anyone
           # who is not signed in, while annotations are.
           size=$(stat -f%z BikeNav)
-          fws=$(ls Frameworks 2>/dev/null | tr '
-' ' ')
+          fws=$(ls Frameworks 2>/dev/null | xargs echo)
           undef=$(nm -u BikeNav 2>/dev/null | grep -c "GMS" || true)
           echo "::notice::binary $((size/1000000)) MB | frameworks: ${fws:-none} | undefined GMS symbols: $undef"
           if [ "$undef" -gt 0 ] && [ -z "$fws" ]; then
