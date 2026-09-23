@@ -11,6 +11,8 @@ final class Navigator: NSObject, ObservableObject {
     @Published private(set) var destination: MKMapItem?
     @Published private(set) var guidance: Guidance?
     @Published private(set) var lastLocation: CLLocation?
+    /// Non-nil while Google is providing the guidance.
+    private var google: GoogleNavSession?
     @Published var message: String?
     @Published var leftHandTraffic: Bool {
         didSet {
@@ -47,7 +49,8 @@ final class Navigator: NSObject, ObservableObject {
 
         link.onReady = { [weak self] in self?.resendState() }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self, self.phase == .navigating, let g = self.guidance else { return }
+            guard let self, self.phase == .navigating, self.google == nil,
+                  let g = self.guidance else { return }
             self.link.send(Packet.navigation(g))
         }
     }
@@ -77,10 +80,21 @@ final class Navigator: NSObject, ObservableObject {
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         link.send(Packet.clock(), force: true)
+
+        // With a key, Google drives the guidance: it matches position to the
+        // route and reroutes, which is the part worth not writing by hand. The
+        // MapKit path stays as the fallback for when there is no key.
+        if Settings.shared.hasKey, let coordinate = destination?.placemark.coordinate {
+            google = GoogleNavSession(link: link, leftHandTraffic: leftHandTraffic)
+            google?.start(to: coordinate, name: destination?.name ?? "Destination")
+            return
+        }
         if let loc = lastLocation { update(with: loc) }
     }
 
     func stop() {
+        google?.stop()
+        google = nil
         phase = .idle
         route = nil
         destination = nil
@@ -246,6 +260,10 @@ final class Navigator: NSObject, ObservableObject {
 
 extension Navigator: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if google != nil {
+            lastLocation = locations.last ?? lastLocation
+            return // Google owns the packet stream while it is running
+        }
         guard let loc = locations.last else { return }
         lastLocation = loc
         if phase == .navigating { update(with: loc) }
