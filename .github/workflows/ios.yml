@@ -112,4 +112,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest BikeNav.ipa             --title "Latest build"             --notes "Built from ${{ github.sha }}. Open this page on the iPhone and tap BikeNav.ipa, then add it in SideStore under My Apps."             --prerelease
+          gh release create latest BikeNav.ipa \
+            --title "Latest build" \
+            --notes "Built from ${{ github.sha }}. On the iPhone, tap BikeNav.ipa below, then add it in SideStore under My Apps." \
+            --prerelease
