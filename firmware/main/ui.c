@@ -146,6 +146,9 @@ static struct {
     lv_obj_t *map_me;      /* the rider, always at the same spot: this is a
                             * heading-up view, so the rider does not move */
     lv_obj_t *map_scale;
+    lv_obj_t *map_arrow;   /* the turn, so the map is safe to ride on */
+    lv_obj_t *map_dist;
+    lv_obj_t *map_street;
 
     lv_obj_t *call;        /* takes the whole screen while the phone rings */
     lv_obj_t *call_who;
@@ -604,6 +607,20 @@ void ui_init(const char *device_name)
     ui.map_scale = label(ui.map, &lv_font_montserrat_16, COL_DIM);
     lv_obj_align(ui.map_scale, LV_ALIGN_BOTTOM_RIGHT, -10, -6);
 
+    /* The turn rides along the top of the map. A map with no instruction on it
+     * would be a screen the rider has to look away from at the wrong moment. */
+    ui.map_arrow = tinted_img(ui.map, COL_TEXT);
+    lv_img_set_zoom(ui.map_arrow, 96);
+    lv_obj_align(ui.map_arrow, LV_ALIGN_TOP_LEFT, 62, -16);
+
+    ui.map_dist = label(ui.map, &lv_font_montserrat_28, COL_TEXT);
+    lv_obj_align(ui.map_dist, LV_ALIGN_TOP_LEFT, 132, 2);
+
+    ui.map_street = label(ui.map, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_set_width(ui.map_street, W - 142);
+    lv_label_set_long_mode(ui.map_street, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui.map_street, LV_ALIGN_TOP_LEFT, 132, 36);
+
     ui.map_back = button(ui.map, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
     lv_obj_align(ui.map_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
 
@@ -907,6 +924,25 @@ static lv_point_t g_map_points[NAV_ROUTE_MAX];
 
 static void draw_map(const nav_state_t *s)
 {
+    /* Same instruction as the turn-by-turn screen, smaller. */
+    const lv_img_dsc_t *img = s->mode != NAV_MODE_IDLE
+        ? arrow_for_direction(s->direction, false) : NULL;
+    set_hidden(ui.map_arrow, img == NULL);
+    if (img) {
+        lv_img_set_src(ui.map_arrow, img);
+    }
+    if (s->mode == NAV_MODE_BASIC) {
+        lv_label_set_text(ui.map_dist, s->distance_text);
+    } else if (s->mode != NAV_MODE_IDLE) {
+        char num[16];
+        const char *unit = "";
+        fmt_distance(s->distance_m, num, sizeof(num), &unit);
+        lv_label_set_text_fmt(ui.map_dist, "%s%s", num, unit);
+    } else {
+        lv_label_set_text(ui.map_dist, "");
+    }
+    lv_label_set_text(ui.map_street, s->mode != NAV_MODE_IDLE ? s->street : "");
+
     lv_coord_t w = lv_obj_get_width(ui.map);
     lv_coord_t h = lv_obj_get_height(ui.map);
     /* The rider sits low and centred, because almost all of what matters is
@@ -932,7 +968,7 @@ static void draw_map(const nav_state_t *s)
         if (ay > max_y) max_y = ay;
     }
     int32_t sx = ((int32_t)(cx - 14) * 256) / max_x;
-    int32_t sy = ((int32_t)(cy - 14) * 256) / max_y;
+    int32_t sy = ((int32_t)(cy - 68) * 256) / max_y; /* clear of the turn banner */
     int32_t sc = sx < sy ? sx : sy;
     if (sc < 1) {
         sc = 1;
@@ -1141,16 +1177,17 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
             }
             break;
 
-        case SCR_MAP:
-            go_home();
-            break;
-
+        /* The arrow and the map are two views of the same thing, so a tap
+         * anywhere swaps between them. Reserving the top-left corner for home
+         * keeps the one destructive-feeling action - leaving navigation - out
+         * of reach of a glove brushing the glass. */
         case SCR_NAV:
-            /* Not anywhere, here: the turn arrow is the one thing that must not
-             * vanish because a glove brushed the glass. A corner is still easy
-             * to find without looking. */
+        case SCR_MAP:
             if (x < lv_disp_get_hor_res(NULL) / 3 && y < 26 + (lv_disp_get_ver_res(NULL) - 26) / 2) {
                 go_home();
+            } else {
+                ui.screen = ui.screen == SCR_NAV ? SCR_MAP : SCR_NAV;
+                invalidate();
             }
             break;
 
