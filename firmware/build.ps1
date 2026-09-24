@@ -13,6 +13,13 @@ if (-not (Test-Path (Join-Path $sdk ".aipi_patched"))) {
     throw "SDK not patched yet. Run: bash firmware/tools/patch_sdk.sh"
 }
 
+# A widget that is declared and never built stays NULL, and the first thing that
+# touches it halts the chip - dark screen, no Bluetooth, and no console to ask
+# why. That shipped once. It does not get to ship twice.
+# Run before PATH is narrowed to the toolchain, which is where python lives.
+& python (Join-Path $PSScriptRoot "tools\check_ui_objects.py")
+if ($LASTEXITCODE -ne 0) { throw "UI widgets declared but never constructed" }
+
 $env:PATH = "$toolchain;$sdk\tools\make;$sdk\tools\cmake\bin;$sdk\tools\ninja;$env:SystemRoot\System32;$env:SystemRoot"
 Push-Location $PSScriptRoot
 try {

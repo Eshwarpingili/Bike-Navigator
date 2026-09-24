@@ -221,7 +221,7 @@ static lv_obj_t *button(lv_obj_t *parent, lv_coord_t w, lv_coord_t h,
 
 static lv_obj_t *button_label(lv_obj_t *b)
 {
-    return lv_obj_get_child(b, 0);
+    return b ? lv_obj_get_child(b, 0) : NULL;
 }
 
 /* Every control's hit area is this much larger than the control, because this
@@ -309,7 +309,9 @@ static void apply_theme(void)
 
     lv_obj_set_style_bg_color(lv_scr_act(), g_pal.bg, 0);
     for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
-        lv_obj_set_style_bg_color(on_card[i], g_pal.card, 0);
+        if (on_card[i]) {
+            lv_obj_set_style_bg_color(on_card[i], g_pal.card, 0);
+        }
     }
     lv_obj_set_style_bg_color(ui.bar, g_pal.bar, 0);
     /* The call buttons follow the palette's green and red, and keep white
@@ -321,10 +323,14 @@ static void apply_theme(void)
     lv_obj_set_style_text_color(button_label(ui.call_decline), lv_color_white(), 0);
 
     for (unsigned i = 0; i < sizeof(on_text) / sizeof(on_text[0]); i++) {
-        lv_obj_set_style_text_color(on_text[i], g_pal.text, 0);
+        if (on_text[i]) {
+            lv_obj_set_style_text_color(on_text[i], g_pal.text, 0);
+        }
     }
     for (unsigned i = 0; i < sizeof(on_dim) / sizeof(on_dim[0]); i++) {
-        lv_obj_set_style_text_color(on_dim[i], g_pal.dim, 0);
+        if (on_dim[i]) {
+            lv_obj_set_style_text_color(on_dim[i], g_pal.dim, 0);
+        }
     }
     lv_obj_set_style_text_color(ui.bar_right, g_pal.good, 0);
     lv_obj_set_style_img_recolor(ui.home_arrow, g_pal.accent, 0);
@@ -623,6 +629,22 @@ void ui_init(const char *device_name)
     lv_obj_set_style_bg_color(ui.call_decline, COL_RED, 0);
     lv_obj_align(ui.call_decline, LV_ALIGN_TOP_RIGHT, -12, 112);
 
+    /* Diagnostics take over the whole area, but only when the link is broken.
+     * Parented to the screen rather than to the home view, because it has to
+     * be able to cover any of them. */
+    ui.diag = box(scr, W, H - 26);
+    lv_obj_align(ui.diag, LV_ALIGN_TOP_LEFT, 0, 26);
+
+    ui.link_state = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
+    lv_obj_align(ui.link_state, LV_ALIGN_BOTTOM_LEFT, 6, -4);
+
+    ui.link_state2 = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
+    lv_obj_align(ui.link_state2, LV_ALIGN_BOTTOM_LEFT, 6, -20);
+
+    ui.log_label = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
+    lv_obj_set_width(ui.log_label, W - 12);
+    lv_obj_align(ui.log_label, LV_ALIGN_TOP_LEFT, 6, 14);
+
     ui.screen = SCR_HOME;
     ui.before_call = SCR_HOME;
     lv_obj_add_flag(ui.nav, LV_OBJ_FLAG_HIDDEN);
@@ -703,6 +725,9 @@ static void fmt_hhmm(int minute_of_day, char *out, size_t cap)
 
 static void set_hidden(lv_obj_t *o, bool hidden)
 {
+    if (o == NULL) {
+        return;
+    }
     if (hidden) {
         lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
     } else {
