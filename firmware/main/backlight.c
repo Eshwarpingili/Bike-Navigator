@@ -45,6 +45,25 @@ void backlight_init(void)
     backlight_set(100);
 }
 
+/* Perceived brightness to PWM duty, in thousandths.
+ *
+ * Duty is linear in light output; the eye is not. Driving the backlight at 20%
+ * duty looks about half brightness rather than a fifth, so a percentage that
+ * means duty tells the rider something untrue. This is the CIE 1931 lightness
+ * curve, which is what "50%" has to mean for it to look like half.
+ *
+ * Integer throughout: (100+16)^3 * 1000 is about 1.56e9, which still fits in
+ * 32 bits, and the PWM period is 1000, so the result is the threshold itself. */
+static uint16_t duty_for(uint8_t perceived)
+{
+    if (perceived <= 8) {
+        /* The curve's linear foot, below which the cube rounds away to nothing. */
+        return (uint16_t)(((uint32_t)perceived * PWM_PERIOD) / 903u);
+    }
+    uint32_t l = (uint32_t)perceived + 16u;
+    return (uint16_t)((l * l * l * PWM_PERIOD) / 1560896u); /* 1560896 = 116^3 */
+}
+
 void backlight_set(uint8_t percent)
 {
     if (g_pwm == NULL) {
@@ -59,6 +78,5 @@ void backlight_set(uint8_t percent)
         return;
     }
     g_percent = percent;
-    bflb_pwm_v2_channel_set_threshold(g_pwm, BL_CHANNEL, 0,
-                                      (uint16_t)((uint32_t)PWM_PERIOD * percent / 100));
+    bflb_pwm_v2_channel_set_threshold(g_pwm, BL_CHANNEL, 0, duty_for(percent));
 }

@@ -17,6 +17,8 @@
 #define HOME_AFTER_DISCONNECT_MS 15000
 /* How long the phone link must stay down before the log takes the screen. */
 #define DIAG_AFTER_MS 25000
+/* How long the volume readout stays up after a change. */
+#define VOL_SHOW_MS 2000
 
 /* Daylight hours, when the screen is fighting the sun and wants a light face. */
 #define LIGHT_FROM_MIN (7 * 60)
@@ -117,6 +119,7 @@ static struct {
     lv_obj_t *tile_set_val;
 
     lv_obj_t *music;       /* full screen: now playing, transport, volume */
+    lv_obj_t *m_back;
     lv_obj_t *m_title;
     lv_obj_t *m_artist;
     lv_obj_t *m_prev;
@@ -126,6 +129,8 @@ static struct {
     lv_obj_t *m_vol_up;
 
     lv_obj_t *settings;    /* full screen: brightness and volume */
+    lv_obj_t *s_back;
+    lv_obj_t *s_tap;       /* where the last tap landed, for diagnosing touch */
     lv_obj_t *s_bl_down;
     lv_obj_t *s_bl_val;
     lv_obj_t *s_bl_up;
@@ -136,6 +141,13 @@ static struct {
     lv_obj_t *call_who;
     lv_obj_t *call_answer;
     lv_obj_t *call_decline;
+
+    lv_obj_t *vol_card;    /* floats over any screen for a moment after a change */
+    lv_obj_t *vol_text;
+    lv_obj_t *vol_track;
+    lv_obj_t *vol_fill;
+    uint32_t vol_shown_ms;
+    bool drawn_vol;
 
     lv_obj_t *diag;        /* only when the phone link is not working */
     lv_obj_t *link_state;
@@ -152,6 +164,7 @@ static struct {
     bool drawn_navigating;
     bool drawn_light;
     uint8_t drawn_backlight;
+    lv_coord_t last_x, last_y; /* the last tap, shown on the settings screen */
     uint32_t now_ms;
 } ui;
 
@@ -208,16 +221,50 @@ static lv_obj_t *button_label(lv_obj_t *b)
     return lv_obj_get_child(b, 0);
 }
 
-/* True when the point is inside the object, with a margin: this is aimed at
- * with a thumb, on a bike, without looking. */
+/* Every control's hit area is this much larger than the control, because this
+ * is aimed at with a thumb, on a bike, without looking. Two controls must
+ * therefore sit at least twice this far apart, or their hit areas overlap and
+ * a tap in between lands on whichever happens to be tested first. */
+#define HIT_PAD 6
+/* Two pixels more than twice the pad, not exactly twice: at exactly twice, the
+ * two padded areas share a boundary and a tap on that line is still ambiguous. */
+#define MIN_GAP (2 * HIT_PAD + 2)
+
+static void padded_area(lv_obj_t *o, lv_area_t *a)
+{
+    lv_obj_get_coords(o, a);
+    a->x1 -= HIT_PAD;
+    a->y1 -= HIT_PAD;
+    a->x2 += HIT_PAD;
+    a->y2 += HIT_PAD;
+}
+
 static bool hit(lv_obj_t *o, lv_coord_t x, lv_coord_t y)
 {
     if (o == NULL || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) {
         return false;
     }
     lv_area_t a;
-    lv_obj_get_coords(o, &a);
-    return x >= a.x1 - 6 && x <= a.x2 + 6 && y >= a.y1 - 6 && y <= a.y2 + 6;
+    padded_area(o, &a);
+    return x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2;
+}
+
+/* Says so on the log screen if any two controls on a screen have hit areas that
+ * overlap. Spacing worked out by hand is exactly the kind of thing that drifts
+ * the next time a layout is touched, and the symptom - a button that sometimes
+ * does its neighbour's job - is miserable to diagnose from the saddle. */
+static void check_spacing(const char *screen, lv_obj_t **controls, int count)
+{
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            lv_area_t a, b;
+            padded_area(controls[i], &a);
+            padded_area(controls[j], &b);
+            if (a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2) {
+                logbuf_add("LAYOUT %s %d/%d overlap", screen, i, j);
+            }
+        }
+    }
 }
 
 /* Backlight: the rider's setting if there is one, otherwise bright by day and
@@ -244,15 +291,17 @@ static void apply_theme(void)
                             button_label(ui.m_next), button_label(ui.m_vol_down),
                             button_label(ui.m_vol_up), button_label(ui.s_bl_down),
                             button_label(ui.s_bl_up), button_label(ui.s_vol_down),
-                            button_label(ui.s_vol_up) };
+                            button_label(ui.s_vol_up), button_label(ui.m_back),
+                            button_label(ui.s_back), ui.vol_text };
     lv_obj_t *on_dim[] = { ui.status, ui.then_label, ui.artist, ui.idle_msg, ui.home_street,
-                           ui.home_none, ui.m_artist, ui.tile_set_val,
+                           ui.home_none, ui.m_artist, ui.tile_set_val, ui.s_tap,
                            ui.link_state, ui.link_state2, ui.log_label };
     /* The tiles and every control share the card colour. The call buttons do
      * not: green and red are the whole point of them. */
     lv_obj_t *on_card[] = { ui.tile_nav, ui.tile_media, ui.tile_clock, ui.tile_set,
                             ui.m_prev, ui.m_play, ui.m_next, ui.m_vol_down, ui.m_vol_up,
-                            ui.s_bl_down, ui.s_bl_up, ui.s_vol_down, ui.s_vol_up };
+                            ui.s_bl_down, ui.s_bl_up, ui.s_vol_down, ui.s_vol_up,
+                            ui.m_back, ui.s_back, ui.vol_card };
 
     lv_obj_set_style_bg_color(lv_scr_act(), g_pal.bg, 0);
     for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
@@ -365,13 +414,14 @@ void ui_init(const char *device_name)
     ui.idle = box(scr, W, H - 26);
     lv_obj_align(ui.idle, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    lv_coord_t tw = (W - 18) / 2;
-    lv_coord_t th = (H - 26 - 18) / 2;
-    lv_coord_t col2 = 6 + tw + 6;
-    lv_coord_t row2 = 6 + th + 6;
+    /* Gaps of MIN_GAP, so no two tiles' hit areas can reach each other. */
+    lv_coord_t tw = (W - 3 * MIN_GAP) / 2;
+    lv_coord_t th = (H - 26 - 3 * MIN_GAP) / 2;
+    lv_coord_t col2 = MIN_GAP + tw + MIN_GAP;
+    lv_coord_t row2 = MIN_GAP + th + MIN_GAP;
 
     ui.tile_nav = card(ui.idle, tw, th);
-    lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, 6, 6);
+    lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, MIN_GAP, MIN_GAP);
 
     ui.home_arrow = tinted_img(ui.tile_nav, COL_ACCENT);
     lv_img_set_zoom(ui.home_arrow, 128); /* the nav-screen arrows at half size */
@@ -391,7 +441,7 @@ void ui_init(const char *device_name)
     lv_obj_center(ui.home_none);
 
     ui.tile_media = card(ui.idle, tw, th);
-    lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col2, 6);
+    lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col2, MIN_GAP);
 
     ui.track = label(ui.tile_media, &lv_font_montserrat_16, COL_TEXT);
     lv_obj_set_width(ui.track, tw - 12);
@@ -414,7 +464,7 @@ void ui_init(const char *device_name)
     lv_obj_center(ui.idle_msg);
 
     ui.tile_clock = card(ui.idle, tw, th);
-    lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, 6, row2);
+    lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, MIN_GAP, row2);
     ui.idle_clock = label(ui.tile_clock, &lv_font_montserrat_48, COL_TEXT);
     lv_obj_center(ui.idle_clock);
 
@@ -431,59 +481,77 @@ void ui_init(const char *device_name)
     ui.music = box(scr, W, H - 26);
     lv_obj_align(ui.music, LV_ALIGN_TOP_LEFT, 0, 26);
 
+    ui.m_back = button(ui.music, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
+    lv_obj_align(ui.m_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
+
+    /* Narrowed to clear the back button: a long title would otherwise run
+     * underneath it and make it look like part of the text. */
     ui.m_title = label(ui.music, &lv_font_montserrat_28, COL_TEXT);
-    lv_obj_set_width(ui.m_title, W - 20);
+    lv_obj_set_width(ui.m_title, W - 150);
     lv_obj_set_style_text_align(ui.m_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.m_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_align(ui.m_title, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(ui.m_title, LV_ALIGN_TOP_MID, 20, 4);
 
     ui.m_artist = label(ui.music, &lv_font_montserrat_20, COL_DIM);
     lv_obj_set_width(ui.m_artist, W - 20);
     lv_obj_set_style_text_align(ui.m_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.m_artist, LV_LABEL_LONG_DOT);
-    lv_obj_align(ui.m_artist, LV_ALIGN_TOP_MID, 0, 46);
+    lv_obj_align(ui.m_artist, LV_ALIGN_TOP_MID, 0, 40);
 
+    /* The two rows are 20 px apart. They were 8, which is less than twice the
+     * margin hit testing adds, so the bottom of "next" and the top of "volume"
+     * overlapped and a tap between them could land on either. */
     lv_coord_t bw = (W - 56) / 3;
-    ui.m_prev = button(ui.music, bw, 56, LV_SYMBOL_PREV, &lv_font_montserrat_28);
-    lv_obj_align(ui.m_prev, LV_ALIGN_TOP_LEFT, 10, 82);
-    ui.m_play = button(ui.music, bw, 56, LV_SYMBOL_PLAY, &lv_font_montserrat_28);
-    lv_obj_align(ui.m_play, LV_ALIGN_TOP_LEFT, 10 + bw + 18, 82);
-    ui.m_next = button(ui.music, bw, 56, LV_SYMBOL_NEXT, &lv_font_montserrat_28);
-    lv_obj_align(ui.m_next, LV_ALIGN_TOP_LEFT, 10 + 2 * (bw + 18), 82);
+    ui.m_prev = button(ui.music, bw, 58, LV_SYMBOL_PREV, &lv_font_montserrat_28);
+    lv_obj_align(ui.m_prev, LV_ALIGN_TOP_LEFT, 10, 70);
+    ui.m_play = button(ui.music, bw, 58, LV_SYMBOL_PLAY, &lv_font_montserrat_28);
+    lv_obj_align(ui.m_play, LV_ALIGN_TOP_LEFT, 10 + bw + 18, 70);
+    ui.m_next = button(ui.music, bw, 58, LV_SYMBOL_NEXT, &lv_font_montserrat_28);
+    lv_obj_align(ui.m_next, LV_ALIGN_TOP_LEFT, 10 + 2 * (bw + 18), 70);
 
     lv_coord_t vw = (W - 40) / 2;
-    ui.m_vol_down = button(ui.music, vw, 52, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_20);
-    lv_obj_align(ui.m_vol_down, LV_ALIGN_TOP_LEFT, 10, 146);
-    ui.m_vol_up = button(ui.music, vw, 52, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_20);
-    lv_obj_align(ui.m_vol_up, LV_ALIGN_TOP_LEFT, 10 + vw + 20, 146);
+    ui.m_vol_down = button(ui.music, vw, 54, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_20);
+    lv_obj_align(ui.m_vol_down, LV_ALIGN_TOP_LEFT, 10, 148);
+    ui.m_vol_up = button(ui.music, vw, 54, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_20);
+    lv_obj_align(ui.m_vol_up, LV_ALIGN_TOP_LEFT, 10 + vw + 20, 148);
 
     /* Settings: brightness and volume, one row each. */
     ui.settings = box(scr, W, H - 26);
     lv_obj_align(ui.settings, LV_ALIGN_TOP_LEFT, 0, 26);
 
+    ui.s_back = button(ui.settings, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
+    lv_obj_align(ui.s_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
+
     lv_obj_t *bl_head = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
     lv_label_set_text(bl_head, "Brightness");
-    lv_obj_align(bl_head, LV_ALIGN_TOP_LEFT, 12, 4);
+    lv_obj_align(bl_head, LV_ALIGN_TOP_LEFT, 80, 10);
 
-    ui.s_bl_down = button(ui.settings, 76, 56, LV_SYMBOL_MINUS, &lv_font_montserrat_28);
-    lv_obj_align(ui.s_bl_down, LV_ALIGN_TOP_LEFT, 12, 26);
+    ui.s_bl_down = button(ui.settings, 76, 54, LV_SYMBOL_MINUS, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_bl_down, LV_ALIGN_TOP_LEFT, 12, 50);
+    /* Tapping the reading itself switches automatic on and off, so minus always
+     * dims and plus always brightens - a cycle that wrapped from Auto round to
+     * full brightness on a press of minus would just be a lie about direction. */
     ui.s_bl_val = label(ui.settings, &lv_font_montserrat_28, COL_TEXT);
-    lv_obj_align(ui.s_bl_val, LV_ALIGN_TOP_MID, 0, 38);
-    ui.s_bl_up = button(ui.settings, 76, 56, LV_SYMBOL_PLUS, &lv_font_montserrat_28);
-    lv_obj_align(ui.s_bl_up, LV_ALIGN_TOP_RIGHT, -12, 26);
+    /* Given a width so it is a target, not just a few characters wide. */
+    lv_obj_set_width(ui.s_bl_val, 100);
+    lv_obj_set_style_text_align(ui.s_bl_val, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(ui.s_bl_val, LV_ALIGN_TOP_MID, 0, 60);
+    ui.s_bl_up = button(ui.settings, 76, 54, LV_SYMBOL_PLUS, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_bl_up, LV_ALIGN_TOP_RIGHT, -12, 50);
 
     lv_obj_t *vol_head = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
     lv_label_set_text(vol_head, "Volume");
-    lv_obj_align(vol_head, LV_ALIGN_TOP_LEFT, 12, 96);
+    lv_obj_align(vol_head, LV_ALIGN_TOP_LEFT, 12, 112);
 
-    ui.s_vol_down = button(ui.settings, 76, 56, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_28);
-    lv_obj_align(ui.s_vol_down, LV_ALIGN_TOP_LEFT, 12, 118);
-    ui.s_vol_up = button(ui.settings, 76, 56, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_28);
-    lv_obj_align(ui.s_vol_up, LV_ALIGN_TOP_RIGHT, -12, 118);
+    ui.s_vol_down = button(ui.settings, 76, 54, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_vol_down, LV_ALIGN_TOP_LEFT, 12, 134);
+    ui.s_vol_up = button(ui.settings, 76, 54, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_vol_up, LV_ALIGN_TOP_RIGHT, -12, 134);
 
-    lv_obj_t *back_hint = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
-    lv_label_set_text(back_hint, "Tap the top bar to go back");
-    lv_obj_align(back_hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+    /* Where the last tap actually landed. The board has no other way to say
+     * what the touch panel reported, and guessing at that has cost enough. */
+    ui.s_tap = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_align(ui.s_tap, LV_ALIGN_BOTTOM_MID, 0, -4);
 
     /* An incoming call: nothing else on the screen, two large targets. */
     ui.call = box(scr, W, H - 26);
@@ -499,13 +567,32 @@ void ui_init(const char *device_name)
     lv_label_set_long_mode(ui.call_who, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.call_who, LV_ALIGN_TOP_MID, 0, 44);
 
-    lv_coord_t cw = (W - 36) / 2;
+    lv_coord_t cw = (W - 24 - MIN_GAP) / 2;
     ui.call_answer = button(ui.call, cw, 68, LV_SYMBOL_CALL, &lv_font_montserrat_28);
     lv_obj_set_style_bg_color(ui.call_answer, COL_GREEN, 0);
     lv_obj_align(ui.call_answer, LV_ALIGN_TOP_LEFT, 12, 112);
     ui.call_decline = button(ui.call, cw, 68, LV_SYMBOL_CLOSE, &lv_font_montserrat_28);
     lv_obj_set_style_bg_color(ui.call_decline, COL_RED, 0);
     lv_obj_align(ui.call_decline, LV_ALIGN_TOP_RIGHT, -12, 112);
+
+    /* Volume feedback, floating over whatever is showing: pressing a volume
+     * button with no visible result is indistinguishable from a button that
+     * did not register. The number is the phone's own, not what was asked
+     * for, so it also shows when the volume is changed on the phone itself. */
+    ui.vol_card = card(scr, 224, 58);
+    lv_obj_align(ui.vol_card, LV_ALIGN_BOTTOM_MID, 0, -8);
+    ui.vol_text = label(ui.vol_card, &lv_font_montserrat_20, COL_TEXT);
+    lv_obj_align(ui.vol_text, LV_ALIGN_TOP_MID, 0, 4);
+    ui.vol_track = box(ui.vol_card, 192, 10);
+    lv_obj_set_style_bg_color(ui.vol_track, COL_BAR, 0);
+    lv_obj_set_style_bg_opa(ui.vol_track, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(ui.vol_track, 5, 0);
+    lv_obj_align(ui.vol_track, LV_ALIGN_BOTTOM_MID, 0, -10);
+    ui.vol_fill = box(ui.vol_track, 0, 10);
+    lv_obj_set_style_bg_color(ui.vol_fill, COL_ACCENT, 0);
+    lv_obj_set_style_bg_opa(ui.vol_fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(ui.vol_fill, 5, 0);
+    lv_obj_align(ui.vol_fill, LV_ALIGN_LEFT_MID, 0, 0);
 
     /* Diagnostics take over the whole area, but only when the link is broken.
      * Parented to the screen rather than to the home view, because it has to
@@ -530,7 +617,22 @@ void ui_init(const char *device_name)
     lv_obj_add_flag(ui.settings, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.call, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.diag, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.vol_card, LV_OBJ_FLAG_HIDDEN);
     apply_theme();
+
+    /* Lay everything out now, so the coordinates the check reads are the real
+     * ones rather than whatever they were before the first refresh. */
+    lv_obj_update_layout(scr);
+    lv_obj_t *home_controls[] = { ui.tile_nav, ui.tile_media, ui.tile_clock, ui.tile_set };
+    lv_obj_t *music_controls[] = { ui.m_back, ui.m_prev, ui.m_play, ui.m_next,
+                                   ui.m_vol_down, ui.m_vol_up };
+    lv_obj_t *set_controls[] = { ui.s_back, ui.s_bl_down, ui.s_bl_val, ui.s_bl_up,
+                                 ui.s_vol_down, ui.s_vol_up };
+    lv_obj_t *call_controls[] = { ui.call_answer, ui.call_decline };
+    check_spacing("home", home_controls, 4);
+    check_spacing("music", music_controls, 6);
+    check_spacing("set", set_controls, 6);
+    check_spacing("call", call_controls, 2);
 }
 
 static void fmt_distance(uint32_t m, char *num, size_t num_cap, const char **unit)
@@ -688,7 +790,8 @@ static void draw_brightness(lv_obj_t *target)
 {
     uint8_t percent = prefs_brightness();
     if (percent == BRIGHTNESS_AUTO) {
-        lv_label_set_text(target, "Auto");
+        /* Say what automatic currently amounts to, or the reading means nothing. */
+        lv_label_set_text_fmt(target, "Auto %u%%", (unsigned)ui.drawn_backlight);
     } else {
         lv_label_set_text_fmt(target, "%u%%", (unsigned)percent);
     }
@@ -791,23 +894,36 @@ static void draw_diag(const nav_state_t *s)
                           s->apple_clock ? "+clock" : "");
 }
 
-/* Auto, then the fixed levels, then back to Auto. Automatic is a real choice
- * rather than the absence of one: it is what a rider who never opens this
- * screen wants, so the cycle returns to it instead of trapping them at 20%. */
+/* Minus always dims and plus always brightens, with no wrap: a cycle that went
+ * from Auto round to full brightness on a press of minus was lying about the
+ * direction. Automatic is a separate choice, made by tapping the reading. */
 static void step_brightness(int direction)
 {
     int now = prefs_brightness();
-    int next;
     if (now == BRIGHTNESS_AUTO) {
-        next = direction > 0 ? BL_LOWEST : 100;
-    } else {
-        next = now + direction * BL_STEP;
-        if (next > 100 || next < BL_LOWEST) {
-            next = BRIGHTNESS_AUTO;
-        }
+        /* Carry on from what it looks like now, not from an end of the scale. */
+        now = ui.drawn_backlight ? ui.drawn_backlight : BL_DAY;
+    }
+    int next = now + direction * BL_STEP;
+    next = (next / BL_STEP) * BL_STEP; /* back onto round numbers */
+    if (next < BL_LOWEST) {
+        next = BL_LOWEST;
+    } else if (next > 100) {
+        next = 100;
     }
     prefs_set_brightness((uint8_t)next);
     /* At once: a brightness control that waits for the next redraw feels broken. */
+    ui.drawn_backlight = 0;
+    apply_backlight(ui.drawn_light);
+}
+
+static void toggle_auto_brightness(void)
+{
+    if (prefs_brightness() == BRIGHTNESS_AUTO) {
+        prefs_set_brightness(ui.drawn_backlight ? ui.drawn_backlight : BL_DAY);
+    } else {
+        prefs_set_brightness(BRIGHTNESS_AUTO);
+    }
     ui.drawn_backlight = 0;
     apply_backlight(ui.drawn_light);
 }
@@ -816,6 +932,14 @@ static void step_brightness(int direction)
 static void invalidate(void)
 {
     ui.drawn_version = UINT32_MAX;
+}
+
+static void go_home(void)
+{
+    if (ui.screen != SCR_HOME) {
+        ui.screen = SCR_HOME;
+    }
+    invalidate(); /* the tap readout moved, even if the screen did not */
 }
 
 ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
@@ -837,8 +961,13 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
         return act;
     }
 
-    /* The top bar is the way back, from anywhere. One target, always in the
-     * same place, which is what matters when it is found without looking. */
+    ui.last_x = x;
+    ui.last_y = y;
+
+    /* The top bar is one way back, but only one. A 26 px strip along the edge
+     * of the glass was the sole way out, and it did not work: thin, and right
+     * where a digitizer is least reliable. The back button below is the real
+     * answer, and on the screens where nothing is at stake, so is empty space. */
     if (y < 26) {
         if (ui.screen != SCR_HOME) {
             ui.screen = SCR_HOME;
@@ -871,10 +1000,14 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
                 act.arg = MEDIA_CMD_NEXT;
             } else if (hit(ui.m_vol_down, x, y)) {
                 act.arg = MEDIA_CMD_VOLUME_DOWN;
-            } else if (hit(ui.m_vol_up, x, y)) {
-                act.arg = MEDIA_CMD_VOLUME_UP;
             } else {
                 act.kind = UI_ACT_NONE;
+                if (hit(ui.m_vol_up, x, y)) {
+                    act.kind = UI_ACT_MEDIA;
+                    act.arg = MEDIA_CMD_VOLUME_UP;
+                } else {
+                    go_home(); /* the back button, or anywhere that is not a control */
+                }
             }
             break;
 
@@ -885,18 +1018,39 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
             } else if (hit(ui.s_bl_up, x, y)) {
                 step_brightness(1);
                 invalidate();
+            } else if (hit(ui.s_bl_val, x, y)) {
+                toggle_auto_brightness();
+                invalidate();
             } else if (hit(ui.s_vol_down, x, y)) {
                 act.kind = UI_ACT_MEDIA;
                 act.arg = MEDIA_CMD_VOLUME_DOWN;
             } else if (hit(ui.s_vol_up, x, y)) {
                 act.kind = UI_ACT_MEDIA;
                 act.arg = MEDIA_CMD_VOLUME_UP;
+            } else {
+                go_home();
             }
             break;
 
         case SCR_NAV:
+            /* Not anywhere, here: the turn arrow is the one thing that must not
+             * vanish because a glove brushed the glass. A corner is still easy
+             * to find without looking. */
+            if (x < lv_disp_get_hor_res(NULL) / 3 && y < 26 + (lv_disp_get_ver_res(NULL) - 26) / 2) {
+                go_home();
+            }
+            break;
+
         default:
             break;
+    }
+    /* Acknowledge a volume press at once, rather than waiting for the phone to
+     * report back: a control that does nothing for a few hundred milliseconds
+     * gets pressed again, and then the volume jumps two steps. */
+    if (act.kind == UI_ACT_MEDIA &&
+        (act.arg == MEDIA_CMD_VOLUME_UP || act.arg == MEDIA_CMD_VOLUME_DOWN)) {
+        ui.vol_shown_ms = ui.now_ms ? ui.now_ms : 1;
+        invalidate();
     }
     return act;
 }
@@ -914,6 +1068,7 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
     int minute = local_minute_of_day(s, now_ms, 0);
     bool ringing = s->call_ringing;
     bool broken = link_broken(s);
+    bool show_vol = ui.vol_shown_ms != 0 && now_ms - ui.vol_shown_ms < VOL_SHOW_MS;
 
     /* Light face by day, dark by night; dark until the phone shares its clock. */
     bool light = minute >= LIGHT_FROM_MIN && minute < LIGHT_TO_MIN;
@@ -927,10 +1082,29 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
     unsigned log_version = logbuf_version();
     if (s->version == ui.drawn_version && stale == ui.drawn_stale && minute == ui.drawn_minute &&
         navigating == ui.drawn_navigating && log_version == ui.drawn_log &&
-        ringing == ui.drawn_ringing) {
+        ringing == ui.drawn_ringing && show_vol == ui.drawn_vol) {
         return;
     }
     bool was_navigating = ui.drawn_navigating;
+    ui.drawn_vol = show_vol;
+
+    /* Over everything, including a ringing call: the rider may well be turning
+     * the music down because the phone is ringing. */
+    set_hidden(ui.vol_card, !show_vol);
+    if (show_vol) {
+        if (s->volume_valid) {
+            lv_label_set_text_fmt(ui.vol_text, LV_SYMBOL_VOLUME_MAX " %u%%",
+                                  (unsigned)s->volume_percent);
+            lv_coord_t w = (lv_coord_t)((192 * (uint32_t)s->volume_percent) / 100);
+            lv_obj_set_width(ui.vol_fill, w);
+            set_hidden(ui.vol_track, false);
+        } else {
+            /* The phone has not said what its volume is. Saying the command
+             * went out is true; drawing a bar at some invented level is not. */
+            lv_label_set_text(ui.vol_text, LV_SYMBOL_VOLUME_MAX " sent");
+            set_hidden(ui.vol_track, true);
+        }
+    }
     ui.drawn_log = log_version;
     ui.drawn_version = s->version;
     ui.drawn_stale = stale;
@@ -1020,6 +1194,7 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
             break;
         case SCR_SETTINGS:
             draw_brightness(ui.s_bl_val);
+            lv_label_set_text_fmt(ui.s_tap, "last touch %d, %d", (int)ui.last_x, (int)ui.last_y);
             break;
         case SCR_HOME:
         default:

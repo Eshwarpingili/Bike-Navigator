@@ -55,6 +55,9 @@ typedef struct {
     char music_artist[NAV_MUSIC_MAX + 1];
     bool music_valid;
     bool music_playing;
+    /* The phone's own volume, as it reports it - not what the board asked for. */
+    uint8_t volume_percent;
+    bool volume_valid;
 
     /* Incoming call, from the phone's notification service (ANCS). The uid is
      * what an answer or a decline has to quote back to the phone. */
@@ -94,6 +97,7 @@ void nav_state_set_connected(bool connected, uint32_t now_ms);
 /* Now playing (title when is_title, else artist); text need not be NUL terminated. */
 void nav_state_set_music_text(bool is_title, const char *text, uint16_t len);
 void nav_state_set_music_playing(bool playing);
+void nav_state_set_volume(uint8_t percent);
 void nav_state_clear_music(void);
 
 /* A call is ringing. name may be NULL until the phone sends the caller's. */

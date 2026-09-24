@@ -213,6 +213,17 @@ void nav_state_clear_call(void)
     xSemaphoreGive(g_lock);
 }
 
+void nav_state_set_volume(uint8_t percent)
+{
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (!g_state.volume_valid || g_state.volume_percent != percent) {
+        g_state.volume_percent = percent;
+        g_state.volume_valid = true;
+        g_state.version++;
+    }
+    xSemaphoreGive(g_lock);
+}
+
 void nav_state_clear_music(void)
 {
     xSemaphoreTake(g_lock, portMAX_DELAY);

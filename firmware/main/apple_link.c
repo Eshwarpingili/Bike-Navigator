@@ -43,6 +43,7 @@
 #define ENTITY_PLAYER 0
 #define ENTITY_TRACK  2
 #define PLAYER_ATTR_PLAYBACK_INFO 1
+#define PLAYER_ATTR_VOLUME 2
 #define TRACK_ATTR_ARTIST 0
 #define TRACK_ATTR_TITLE  2
 
@@ -135,6 +136,28 @@ static void next_step(enum step step)
 
 /* ---------------- notifications ---------------- */
 
+/* AMS sends volume as a decimal fraction of one, as text: "0.75", "1", "0".
+ * Done in integers - there is no reason to drag in floating point for this. */
+static uint8_t parse_volume(const char *s, uint16_t len)
+{
+    uint32_t whole = 0, frac = 0, scale = 1;
+    uint16_t i = 0;
+    while (i < len && s[i] >= '0' && s[i] <= '9') {
+        whole = whole * 10 + (uint32_t)(s[i] - '0');
+        i++;
+    }
+    if (i < len && s[i] == '.') {
+        i++;
+        while (i < len && s[i] >= '0' && s[i] <= '9' && scale < 100) {
+            frac = frac * 10 + (uint32_t)(s[i] - '0');
+            scale *= 10;
+            i++;
+        }
+    }
+    uint32_t percent = whole * 100 + (frac * 100) / scale;
+    return percent > 100 ? 100 : (uint8_t)percent;
+}
+
 static uint8_t on_media_update(struct bt_conn *conn, struct bt_gatt_subscribe_params *params,
                                const void *data, uint16_t length)
 {
@@ -169,6 +192,8 @@ static uint8_t on_media_update(struct bt_conn *conn, struct bt_gatt_subscribe_pa
         nav_state_set_music_text(false, value, value_len);
     } else if (d[0] == ENTITY_PLAYER && d[1] == PLAYER_ATTR_PLAYBACK_INFO) {
         nav_state_set_music_playing(value_len > 0 && value[0] == '1');
+    } else if (d[0] == ENTITY_PLAYER && d[1] == PLAYER_ATTR_VOLUME) {
+        nav_state_set_volume(parse_volume(value, value_len));
     }
     return BT_GATT_ITER_CONTINUE;
 }
@@ -570,7 +595,10 @@ static void subscribe(struct bt_gatt_subscribe_params *params, uint16_t value_ha
 }
 
 static const uint8_t g_track_request[] = { ENTITY_TRACK, TRACK_ATTR_ARTIST, TRACK_ATTR_TITLE };
-static const uint8_t g_player_request[] = { ENTITY_PLAYER, PLAYER_ATTR_PLAYBACK_INFO };
+/* Volume as well as play state: the phone reports what it actually is, so the
+ * board can show the real level rather than assuming the command landed. */
+static const uint8_t g_player_request[] = { ENTITY_PLAYER, PLAYER_ATTR_PLAYBACK_INFO,
+                                            PLAYER_ATTR_VOLUME };
 /* An entity on its own, with no attributes, cancels that entity's registration.
  * The phone keeps registrations across reconnects, and only sends an attribute
  * when it changes, so re-registering unchanged leaves the screen blank until
