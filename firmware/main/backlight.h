@@ -17,4 +17,9 @@ void backlight_init(void);
  * screen but can never switch it off and strand the rider. */
 void backlight_set(uint8_t percent);
 
+/* What the PWM is actually driving, in thousandths. Shown on the settings
+ * screen: the percentage is perceived brightness, and when the two disagree
+ * it matters which one is wrong. */
+uint16_t backlight_duty(void);
+
 #endif

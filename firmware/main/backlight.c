@@ -18,6 +18,7 @@
 
 static struct bflb_device_s *g_pwm;
 static uint8_t g_percent;
+static uint16_t g_duty;
 
 void backlight_init(void)
 {
@@ -78,5 +79,11 @@ void backlight_set(uint8_t percent)
         return;
     }
     g_percent = percent;
-    bflb_pwm_v2_channel_set_threshold(g_pwm, BL_CHANNEL, 0, duty_for(percent));
+    g_duty = duty_for(percent);
+    bflb_pwm_v2_channel_set_threshold(g_pwm, BL_CHANNEL, 0, g_duty);
+}
+
+uint16_t backlight_duty(void)
+{
+    return g_duty;
 }
