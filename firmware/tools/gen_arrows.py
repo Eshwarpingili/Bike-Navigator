@@ -161,6 +161,49 @@ def fork(left: bool, exit_ramp: bool) -> Shape:
     return s
 
 
+def bend(angle: float) -> Shape:
+    """A curve in the road, not a corner at a junction.
+
+    A constant-radius arc of roughly constant length, so a slight bend reads as
+    a long easy sweep and a steep one as a tight curl. That difference is the
+    whole point: the rider is being told how far to lean, not which way to
+    turn, and the angular corner used for junctions would say the wrong thing.
+    """
+    s = Shape()
+    total = math.radians(min(abs(angle), 150))
+    sign = 1.0 if angle > 0 else -1.0
+    radius = 1.15 / max(total, 0.35)
+    arc = [(0.0, 0.0)]
+    steps = 24
+    for i in range(1, steps + 1):
+        t = total * i / steps
+        arc.append((sign * radius * (1 - math.cos(t)), -radius * math.sin(t)))
+    # The head is built from the final segment, so it needs a straight run to
+    # sit on. Taken off the last sliver of arc it comes out as a lump instead of
+    # a triangle, which is what the first attempt did.
+    hx, hy = sign * math.sin(total), -math.cos(total)
+    arc.append((arc[-1][0] + hx * 0.42, arc[-1][1] + hy * 0.42))
+    s.arrow([(0.0, 0.5)] + arc)
+    return s
+
+
+def grade(over: bool) -> Shape:
+    """Flyover or underpass, using the convention every road map already uses:
+    the road that passes underneath is the one drawn with a gap in it. So an
+    unbroken arrow means you are the one on top."""
+    s = Shape()
+    dim_w = STROKE * 0.8
+    if over:
+        s.stroke([(-0.95, 0.0), (-0.24, 0.0)], alpha=DIM, width=dim_w)
+        s.stroke([(0.24, 0.0), (0.95, 0.0)], alpha=DIM, width=dim_w)
+        s.arrow([(0.0, 1.0), (0.0, -0.95)])
+    else:
+        s.stroke([(-0.95, 0.0), (0.95, 0.0)], alpha=DIM, width=dim_w)
+        s.stroke([(0.0, 1.0), (0.0, 0.26)])
+        s.arrow([(0.0, -0.22), (0.0, -0.95)])
+    return s
+
+
 EXIT_ANGLES = {"se": 135, "e": 90, "ne": 45, "n": 0, "nw": -45, "w": -90, "sw": -135, "s": 180}
 
 
@@ -251,6 +294,15 @@ for _e in EXITS:
     SHAPES[f"rb_rht_{_e}"] = (lambda e: lambda: roundabout(e, clockwise=False))(_e)
     SHAPES[f"rb_lht_{_e}"] = (lambda e: lambda: roundabout(e, clockwise=True))(_e)
 
+# Representative angles for the three grades of bend, picked to look clearly
+# different from each other at 132 px rather than to match any exact threshold.
+BEND_ANGLES = {"slight": 28, "sharp": 65, "steep": 115}
+for _name, _a in BEND_ANGLES.items():
+    SHAPES[f"bend_left_{_name}"] = (lambda a: lambda: bend(-a))(_a)
+    SHAPES[f"bend_right_{_name}"] = (lambda a: lambda: bend(a))(_a)
+SHAPES["flyover"] = lambda: grade(True)
+SHAPES["underpass"] = lambda: grade(False)
+
 # Direction code (PROTOCOL.md) -> image name. Codes not listed draw no arrow.
 DIRECTION_IMAGE = {
     1: "straight", 2: "slight_left", 3: "slight_right", 4: "destination",
@@ -262,6 +314,13 @@ DIRECTION_IMAGE = {
 for _i, _e in enumerate(EXITS):
     DIRECTION_IMAGE[23 + _i] = f"rb_rht_{_e}"
     DIRECTION_IMAGE[31 + _i] = f"rb_lht_{_e}"
+DIRECTION_IMAGE.update({
+    39: "bend_left_slight", 40: "bend_left_sharp", 41: "bend_left_steep",
+    42: "bend_right_slight", 43: "bend_right_sharp", 44: "bend_right_steep",
+    45: "flyover", 46: "underpass",
+})
+# Must match DIR_COUNT in main/nav_state.h.
+DIRECTION_COUNT = max(DIRECTION_IMAGE) + 1
 
 
 def render(name: str, size: int) -> Image.Image:
@@ -307,7 +366,7 @@ def main():
 
     for size_name in SIZES:
         parts.append(f"static const lv_img_dsc_t *const direction_{size_name}[] = {{\n")
-        for code in range(0, 39):
+        for code in range(0, DIRECTION_COUNT):
             name = DIRECTION_IMAGE.get(code)
             parts.append(f"    /* {code:2d} */ {'&img_' + name + '_' + size_name if name else 'NULL'},\n")
         parts.append("};\n\n")

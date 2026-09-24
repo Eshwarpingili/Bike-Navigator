@@ -10,10 +10,37 @@ struct Maneuver {
 
 /// Turns an MKRoute into a polyline plus arrow codes for the board.
 ///
-/// MapKit gives each step as text ("Turn right onto MG Road") but no maneuver type,
-/// so the type comes from the text when it is explicit and from the road geometry
-/// (heading before vs after the step start) otherwise.
+/// MapKit gives each step as text ("Turn right onto MG Road") but no maneuver
+/// type at all, so the type comes from the wording where it is explicit and
+/// from the road geometry everywhere else.
+///
+/// # What the words mean
+///
+/// A junction turn and a road bend are different events on two wheels. A turn
+/// is a decision: slow, look, commit. A bend is not - the road simply curves,
+/// and what it asks for is lean and a line. Calling both of them "sharp left"
+/// tells the rider nothing about whether to brake, so they are separate here,
+/// with separate arrows.
+///
+/// The severity words are the same everywhere they appear:
+///
+///     slight   a hint of a change
+///     (plain)  an ordinary one
+///     sharp    needs real slowing
+///     steep    needs a lot of it
+///
+/// The angles behind those words differ between turns and bends on purpose. A
+/// 60 degree junction is ordinary, because you were slowing for the junction
+/// anyway; a 60 degree bend taken at speed is not. The word describes what it
+/// asks of the rider, not the protractor.
 enum ManeuverBuilder {
+    /// A bend has to be this far from the junctions either side of it before it
+    /// is worth mentioning separately - otherwise it is just the corner the
+    /// rider was already told about, announced twice.
+    private static let bendClearance = 60.0
+    /// And it has to bend at least this much to be worth a card at all.
+    private static let bendThreshold = 25.0
+
     static func build(route: MKRoute, leftHandTraffic: Bool) -> (RoutePath, [Maneuver]) {
         var points: [CLLocationCoordinate2D] = []
         var stepStart: [Int] = []
@@ -32,47 +59,73 @@ enum ManeuverBuilder {
 
         var maneuvers: [Maneuver] = []
         let steps = route.steps
-        for (i, step) in steps.enumerated() where i > 0 {
+
+        func startAlong(_ i: Int) -> Double {
+            path.cumulative[min(stepStart[i], points.count - 1)]
+        }
+
+        for (i, step) in steps.enumerated() {
             let text = step.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
             let isLast = i == steps.count - 1
-            if text.isEmpty && !isLast { continue }
+            let from = startAlong(i)
+            let to = isLast ? path.length : startAlong(i + 1)
 
-            let along = isLast ? path.length : path.cumulative[min(stepStart[i], points.count - 1)]
+            if i > 0 && !(text.isEmpty && !isLast) {
+                let along = isLast ? path.length : from
 
-            // Measure the approach and the departure over a stretch that fits
-            // inside their own steps. A fixed span reaches across a short step
-            // into the turn before or after it, and then reports a corner that
-            // is partly someone else's.
-            let inHeading = path.heading(before: along, span: span(for: steps[i - 1].distance))
-            let outHeading = path.heading(after: along, span: span(for: step.distance))
-            let turn = Geo.angleDiff(outHeading, inHeading)
+                // Measure the approach and the departure over a stretch that
+                // fits inside their own steps. A fixed span reaches across a
+                // short step into the turn before or after it, and then reports
+                // a corner that is partly someone else's.
+                let inHeading = path.heading(before: along, span: span(for: steps[i - 1].distance))
+                let outHeading = path.heading(after: along, span: span(for: step.distance))
+                let turn = Geo.angleDiff(outHeading, inHeading)
 
-            var exitTurn: Double?
-            let circular = isRoundabout(text)
-            if circular {
-                // Where the ring is left, not part way round it. The old probe
-                // stopped 40-90 m in, which on a small roundabout is still on
-                // the circle - so the arrow pointed along the kerb rather than
-                // down the road actually being taken.
-                let leaves = min(path.length, along + step.distance)
-                let nextLen = i + 1 < steps.count ? steps[i + 1].distance : 60
-                exitTurn = Geo.angleDiff(path.heading(after: leaves, span: span(for: nextLen)),
-                                         inHeading)
+                var exitTurn: Double?
+                let circular = isRoundabout(text)
+                if circular {
+                    // Where the ring is left, not part way round it. The old
+                    // probe stopped 40-90 m in, which on a small roundabout is
+                    // still on the circle - so the arrow pointed along the kerb
+                    // rather than down the road actually being taken.
+                    let leaves = min(path.length, along + step.distance)
+                    let nextLen = i + 1 < steps.count ? steps[i + 1].distance : 60
+                    exitTurn = Geo.angleDiff(path.heading(after: leaves, span: span(for: nextLen)),
+                                             inHeading)
+                }
+
+                var code = classify(text, turn: turn, exitTurn: exitTurn, isLast: isLast,
+                                    leftHandTraffic: leftHandTraffic)
+                // Going over or under outranks the shape of the manoeuvre: on a
+                // flyover the lane choice is the whole instruction, and the
+                // gentle curve of the ramp is beside the point.
+                if !isLast, let g = gradeSeparation(text) { code = g }
+
+                // A road that changes name without changing direction is a step
+                // in MapKit's eyes but not in a rider's. Kept, it becomes the
+                // next instruction and hides the actual turn behind it - the
+                // board reading "straight on" while the junction that matters is
+                // the one after. Only dropped when the geometry agrees.
+                if !(!isLast && code == Dir.straight && abs(turn) < 20) {
+                    maneuvers.append(Maneuver(
+                        along: along, direction: code,
+                        street: isLast ? "Destination"
+                                       : describe(code: code, text: text, exitTurn: exitTurn),
+                        instruction: text))
+                }
             }
-            let code = classify(text, turn: turn, exitTurn: exitTurn, isLast: isLast,
-                                leftHandTraffic: leftHandTraffic)
 
-            // A road that changes name without changing direction is a step in
-            // MapKit's eyes but not in a rider's. Kept, it becomes the next
-            // instruction and hides the actual turn behind it - the board would
-            // read "straight on, 200 m" while the junction that matters is the
-            // one after. Only dropped when the geometry agrees it is straight.
-            if !isLast && code == Dir.straight && abs(turn) < 20 { continue }
-
-            maneuvers.append(Maneuver(along: along, direction: code,
-                                      street: isLast ? "Destination" : label(from: text, circular: circular),
-                                      instruction: text))
+            // A curve within the step, which MapKit says nothing about because
+            // there is no decision to make. There is still a bike to lean.
+            if !isLast, let bend = sharpestBend(in: path, from: from, to: to) {
+                let code = Dir.bend(angle: bend.angle)
+                maneuvers.append(Maneuver(along: bend.at, direction: code,
+                                          street: describe(code: code, text: "", exitTurn: nil),
+                                          instruction: "Bend"))
+            }
         }
+
+        maneuvers.sort { $0.along < $1.along }
         if maneuvers.last?.direction != Dir.destination {
             maneuvers.append(Maneuver(along: path.length, direction: Dir.destination,
                                       street: "Destination", instruction: "Arrive"))
@@ -83,6 +136,47 @@ enum ManeuverBuilder {
     static func isRoundabout(_ text: String) -> Bool {
         let t = text.lowercased()
         return t.contains("roundabout") || t.contains("rotary") || t.contains("traffic circle")
+    }
+
+    /// Flyover or underpass, from the wording. MapKit exposes no bridge or
+    /// tunnel flag, so this is all there is - and only the verb is searched, so
+    /// a road *named* Subway Road does not send the rider underground.
+    static func gradeSeparation(_ text: String) -> UInt8? {
+        let verb = (text.lowercased().components(separatedBy: " onto ").first ?? "")
+        if verb.contains("underpass") || verb.contains("tunnel") || verb.contains("subway") {
+            return Dir.underpass
+        }
+        if verb.contains("flyover") || verb.contains("overpass") || verb.contains("over bridge") {
+            return Dir.flyover
+        }
+        return nil
+    }
+
+    /// Where a step bends most, and by how much.
+    ///
+    /// Sampled rather than solved: the heading 20 m before a point against the
+    /// heading 20 m after it, stepped along the road. Nil when the step runs
+    /// essentially straight, or when the bend sits so close to a junction that
+    /// it is the same corner told twice.
+    static func sharpestBend(in path: RoutePath, from: Double, to: Double) -> (at: Double, angle: Double)? {
+        let first = from + bendClearance
+        let last = to - bendClearance
+        guard last - first > 20 else { return nil }
+
+        var bestAt = first
+        var bestAngle = 0.0
+        var d = first
+        while d <= last {
+            let a = Geo.angleDiff(path.heading(after: d + 20, span: 20),
+                                  path.heading(before: d - 20, span: 20))
+            if abs(a) > abs(bestAngle) {
+                bestAngle = a
+                bestAt = d
+            }
+            d += 20
+        }
+        guard abs(bestAngle) >= bendThreshold else { return nil }
+        return (bestAt, bestAngle)
     }
 
     static func classify(_ text: String, turn: Double, exitTurn: Double?, isLast: Bool,
@@ -140,18 +234,46 @@ enum ManeuverBuilder {
         return max(8, min(30, stepDistance * 0.5))
     }
 
-    /// What gets printed under the arrow.
+    /// The line under the arrow.
     ///
     /// The board's line is narrow and the tail is what gets the ellipsis, so
-    /// the most useful thing goes first. At a roundabout that is the exit
-    /// number - "At the roundabout, take the 2nd exit" truncated to "At the
-    /// roundabout,..." told the rider nothing they could not already see.
-    static func label(from text: String, circular: Bool) -> String {
+    /// the thing the rider cannot work out by looking goes first. At a
+    /// roundabout that is the exit number and which way it leaves - the arrow
+    /// shows the shape, the words settle the count. At a bend it is how hard.
+    /// Everywhere else it is the name of the road being joined, because the
+    /// arrow has already said which way.
+    static func describe(code: UInt8, text: String, exitTurn: Double?) -> String {
         let road = roadName(from: text)
-        if circular, let n = exitNumber(from: text) {
-            return road.map { "\(ordinal(n)) exit, \($0)" } ?? "\(ordinal(n)) exit"
+
+        if Dir.isRoundabout(code) {
+            // Always led by what it is or which exit, never by the side alone:
+            // a line that just says "left" at a roundabout is worse than no
+            // line, because it reads like an ordinary turn.
+            var parts = [exitNumber(from: text).map { "\(ordinal($0)) exit" } ?? "Roundabout"]
+            if let side = sideWord(exitTurn) { parts.append(side) }
+            let head = parts.joined(separator: " ")
+            return road.map { "\(head), \($0)" } ?? head
+        }
+        if code == Dir.flyover {
+            return road.map { "Flyover, \($0)" } ?? "Take the flyover"
+        }
+        if code == Dir.underpass {
+            return road.map { "Underpass, \($0)" } ?? "Take the underpass"
+        }
+        if let bend = Dir.bendWords(code) {
+            return bend
         }
         return road ?? text
+    }
+
+    /// Which way a roundabout exit leaves, relative to the way in. Straight
+    /// across gets no word: "2nd exit" already says everything, and "ahead"
+    /// would only crowd out the road name.
+    static func sideWord(_ exitTurn: Double?) -> String? {
+        guard let e = exitTurn else { return nil }
+        if e <= -35 { return "left" }
+        if e >= 35 { return "right" }
+        return nil
     }
 
     /// "Turn right onto MG Road" -> "MG Road". Nil when the instruction names

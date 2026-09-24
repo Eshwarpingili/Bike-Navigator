@@ -11,7 +11,7 @@ enum {
     DIR_DESTINATION = 4,
     DIR_VIA = 5,
     DIR_OFF_ROUTE = 9,
-    DIR_COUNT = 39,
+    DIR_COUNT = 47,  /* keep in step with gen_arrows.py */
 };
 
 #define NAV_FLAG_REROUTING 0x01

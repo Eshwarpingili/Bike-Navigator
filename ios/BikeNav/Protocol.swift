@@ -21,6 +21,44 @@ enum Dir {
     static let exitLeft: UInt8 = 21
     static let exitRight: UInt8 = 22
 
+    /// A curve in the road rather than a junction. No decision to make, so it
+    /// gets its own arrows: a rider needs to know whether the next thing is
+    /// "brake and choose" or "lean and hold".
+    static let bendLeftSlight: UInt8 = 39
+    static let bendLeftSharp: UInt8 = 40
+    static let bendLeftSteep: UInt8 = 41
+    static let bendRightSlight: UInt8 = 42
+    static let bendRightSharp: UInt8 = 43
+    static let bendRightSteep: UInt8 = 44
+    /// Grade separation: over the junction, or under it.
+    static let flyover: UInt8 = 45
+    static let underpass: UInt8 = 46
+
+    /// Bends are graded harder than junction turns of the same angle, because
+    /// they are taken at speed: 60 degrees at a junction you were slowing for
+    /// anyway is ordinary, 60 degrees mid-road is not.
+    static func bend(angle: Double) -> UInt8 {
+        let left = angle < 0
+        switch abs(angle) {
+        case ..<45: return left ? bendLeftSlight : bendRightSlight
+        case ..<90: return left ? bendLeftSharp : bendRightSharp
+        default: return left ? bendLeftSteep : bendRightSteep
+        }
+    }
+
+    /// The words for a bend code, matching the arrow exactly.
+    static func bendWords(_ code: UInt8) -> String? {
+        switch code {
+        case bendLeftSlight: return "Slight bend left"
+        case bendLeftSharp: return "Sharp bend left"
+        case bendLeftSteep: return "Steep bend left"
+        case bendRightSlight: return "Slight bend right"
+        case bendRightSharp: return "Sharp bend right"
+        case bendRightSteep: return "Steep bend right"
+        default: return nil
+        }
+    }
+
     /// Roundabout code for an exit at `exitAngle` degrees relative to the entry
     /// heading (0 = straight across, +90 = right). Left-hand traffic (India) drives
     /// round clockwise, which the board draws differently.

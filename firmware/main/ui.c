@@ -29,7 +29,7 @@
 /* Two palettes, chosen by the phone's clock. Both are high contrast: this gets
  * read at a glance, in motion, over a shoulder. */
 typedef struct {
-    lv_color_t bg, card, text, dim, accent, warn, good, bar;
+    lv_color_t bg, card, text, dim, accent, warn, good, bar, edge;
 } palette_t;
 
 static palette_t g_pal;
@@ -37,14 +37,15 @@ static palette_t g_pal;
 static void set_palette(bool light)
 {
     if (light) {
-        g_pal.bg = lv_color_hex(0xEEF1F5);
+        g_pal.bg = lv_color_hex(0xD8DFE7);
         g_pal.card = lv_color_hex(0xFFFFFF);
-        g_pal.text = lv_color_hex(0x05070A);
-        g_pal.dim = lv_color_hex(0x49515C);
-        g_pal.accent = lv_color_hex(0x0A5AD0);
-        g_pal.warn = lv_color_hex(0xA65200);
-        g_pal.good = lv_color_hex(0x0A7A3C);
-        g_pal.bar = lv_color_hex(0xDFE4EB);
+        g_pal.text = lv_color_hex(0x000000);
+        g_pal.dim = lv_color_hex(0x333C47);
+        g_pal.accent = lv_color_hex(0x0A44C4);
+        g_pal.warn = lv_color_hex(0x8A4200);
+        g_pal.good = lv_color_hex(0x04602F);
+        g_pal.bar = lv_color_hex(0xC2CBD6);
+        g_pal.edge = lv_color_hex(0x7C8A9A);
     } else {
         g_pal.bg = lv_color_hex(0x000000);
         g_pal.card = lv_color_hex(0x161A21);
@@ -54,6 +55,7 @@ static void set_palette(bool light)
         g_pal.warn = lv_color_hex(0xFFB300);
         g_pal.good = lv_color_hex(0x3DDC84);
         g_pal.bar = lv_color_hex(0x161A21);
+        g_pal.edge = lv_color_hex(0x161A21); /* no edge wanted in the dark */
     }
 }
 
@@ -322,6 +324,8 @@ static void apply_theme(void)
     for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
         if (on_card[i]) {
             lv_obj_set_style_bg_color(on_card[i], g_pal.card, 0);
+            lv_obj_set_style_border_color(on_card[i], g_pal.edge, 0);
+            lv_obj_set_style_border_width(on_card[i], ui.drawn_light ? 2 : 0, 0);
         }
     }
     lv_obj_set_style_bg_color(ui.bar, g_pal.bar, 0);
@@ -1309,11 +1313,11 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
          * of reach of a glove brushing the glass. */
         case SCR_NAV:
         case SCR_MAP:
+            /* Only the corner does anything. The route screen is what the rider
+             * asked to be looking at, and a glove brushing the glass should not
+             * take it away. */
             if (x < lv_disp_get_hor_res(NULL) / 3 && y < 26 + (lv_disp_get_ver_res(NULL) - 26) / 2) {
                 go_home();
-            } else {
-                ui.screen = ui.screen == SCR_NAV ? SCR_MAP : SCR_NAV;
-                invalidate();
             }
             break;
 

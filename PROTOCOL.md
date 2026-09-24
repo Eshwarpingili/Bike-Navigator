@@ -65,14 +65,14 @@ One byte, `0x04`. Clears the route and shows the connected/idle screen (clock).
 | 2 | slight left | 22 | exit right |
 | 3 | slight right | 23–30 | roundabout, right-hand traffic (counter-clockwise), exit SE, E, NE, N, NW, W, SW, S |
 | 4 | destination | 31–38 | roundabout, left-hand traffic (clockwise, e.g. India), exit SE, E, NE, N, NW, W, SW, S |
-| 5 | via point | | |
-| 6 | keep left | | |
-| 7 | keep right | | |
-| 8 | left | | |
-| 9 | off route | | |
-| 10 | right | | |
-| 11 | sharp left | | |
-| 12 | sharp right | | |
+| 5 | via point | 39 | slight bend left |
+| 6 | keep left | 40 | sharp bend left |
+| 7 | keep right | 41 | steep bend left |
+| 8 | left | 42 | slight bend right |
+| 9 | off route | 43 | sharp bend right |
+| 10 | right | 44 | steep bend right |
+| 11 | sharp left | 45 | flyover |
+| 12 | sharp right | 46 | underpass |
 | 13 | straight | | |
 | 14 | U-turn left | | |
 | 15 | U-turn right | | |
@@ -83,6 +83,28 @@ One byte, `0x04`. Clears the route and shows the connected/idle screen (clock).
 
 Roundabout exit directions are relative to the direction you enter: N is straight
 across, E is a right turn, W a left turn, S going back the way you came.
+
+### A turn and a bend are different instructions
+
+A turn (8, 10, 11, …) happens at a junction: slow, look, pick a branch. A bend
+(39–44) is the road itself curving, with nothing to decide — what it asks for is
+lean, not brakes. They carry different arrows because on two wheels they are not
+the same instruction, and one word for both says nothing about whether to slow.
+
+The severity words mean the same thing wherever they appear, but the angles
+behind them differ between the two on purpose. Sixty degrees at a junction is
+ordinary, because the rider was slowing for the junction anyway; sixty degrees
+mid-road at speed is not. The word describes what the road asks of the rider,
+not what a protractor says.
+
+| | slight | sharp | steep / U-turn |
+|---|---|---|---|
+| turn, at a junction | 20–45° | 100–160° | over 160° (U-turn) |
+| bend, mid-road | 20–45° | 45–90° | over 90° |
+
+Flyover and underpass (45, 46) are drawn the way a road map draws them: the road
+passing underneath is the one with a gap in it, so an unbroken arrow means you
+are the one on top.
 
 ## Board → phone
 
