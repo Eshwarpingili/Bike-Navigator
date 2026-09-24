@@ -1,0 +1,60 @@
+  overpass-api.de: HTTP Error 504: Gateway Timeout
+  overpass.kumi.systems: HTTP Error 504: Gateway Timeout
+  overpass-api.de: HTTP Error 429: Too Many Requests
+  overpass-api.de: HTTP Error 429: Too Many Requests
+  overpass.kumi.systems: HTTP Error 504: Gateway Timeout
+  overpass-api.de: HTTP Error 504: Gateway Timeout
+  overpass.kumi.systems: HTTP Error 504: Gateway Timeout
+  overpass-api.de: HTTP Error 504: Gateway Timeout
+  overpass.kumi.systems: HTTP Error 504: Gateway Timeout
+  overpass-api.de: HTTP Error 504: Gateway Timeout
+  overpass-api.de: HTTP Error 504: Gateway Timeout
+  overpass-api.de: HTTP Error 504: Gateway Timeout
+  overpass.kumi.systems: HTTP Error 504: Gateway Timeout
+  overpass.osm.ch: Expecting value: line 1 column 1 (char 0)
+  all mirrors busy, retry in 20s
+  overpass-api.de: HTTP Error 429: Too Many Requests
+  overpass.kumi.systems: HTTP Error 504: Gateway Timeout
+grid 25 x 35 tiles of 0.010 deg
+fetch 17.300,78.250 .. 17.350,78.300
+fetch 17.300,78.300 .. 17.350,78.350
+fetch 17.300,78.350 .. 17.350,78.400
+fetch 17.300,78.400 .. 17.350,78.450
+fetch 17.300,78.450 .. 17.350,78.500
+fetch 17.300,78.500 .. 17.350,78.550
+fetch 17.300,78.550 .. 17.350,78.600
+fetch 17.300,78.600 .. 17.350,78.600
+fetch 17.350,78.250 .. 17.400,78.300
+fetch 17.350,78.300 .. 17.400,78.350
+fetch 17.350,78.350 .. 17.400,78.400
+fetch 17.350,78.400 .. 17.400,78.450
+fetch 17.350,78.450 .. 17.400,78.500
+fetch 17.350,78.500 .. 17.400,78.550
+fetch 17.350,78.550 .. 17.400,78.600
+fetch 17.350,78.600 .. 17.400,78.600
+fetch 17.400,78.250 .. 17.450,78.300
+fetch 17.400,78.300 .. 17.450,78.350
+fetch 17.400,78.350 .. 17.450,78.400
+fetch 17.400,78.400 .. 17.450,78.450
+fetch 17.400,78.450 .. 17.450,78.500
+fetch 17.400,78.500 .. 17.450,78.550
+fetch 17.400,78.550 .. 17.450,78.600
+fetch 17.400,78.600 .. 17.450,78.600
+fetch 17.450,78.250 .. 17.500,78.300
+fetch 17.450,78.300 .. 17.500,78.350
+fetch 17.450,78.350 .. 17.500,78.400
+fetch 17.450,78.400 .. 17.500,78.450
+fetch 17.450,78.450 .. 17.500,78.500
+fetch 17.450,78.500 .. 17.500,78.550
+fetch 17.450,78.550 .. 17.500,78.600
+fetch 17.450,78.600 .. 17.500,78.600
+fetch 17.500,78.250 .. 17.550,78.300
+fetch 17.500,78.300 .. 17.550,78.350
+fetch 17.500,78.350 .. 17.550,78.400
+fetch 17.500,78.400 .. 17.550,78.450
+fetch 17.500,78.450 .. 17.550,78.500
+fetch 17.500,78.500 .. 17.550,78.550
+fetch 17.500,78.550 .. 17.550,78.600
+fetch 17.500,78.600 .. 17.550,78.600
+ways 107824, points 548247 -> 258511 after simplifying
+map\hyderabad.bin: 1.43 MB, 806 of 875 tiles have roads
