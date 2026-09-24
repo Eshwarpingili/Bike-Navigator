@@ -12,8 +12,14 @@
 param(
     [Parameter(Mandatory = $true)][string]$Port,
     [switch]$Backup,
-    [string]$Restore
+    [string]$Restore,
+    [string]$Map
 )
+
+# The street map goes above everything the partition table claims. The SDK ships
+# a 4 MB layout and this part is 8 MB, so the whole top half is free. Must match
+# MAP_FLASH_ADDR in main/mapdata.h.
+$MapAddress = "0x400000"
 
 # Native tools print progress on stderr; failures are detected from their output.
 $ErrorActionPreference = "Continue"
@@ -40,6 +46,14 @@ try {
         Get-Item $file | Select-Object FullName, Length
     } elseif ($Restore) {
         Invoke-Flasher @("--flash", "--write", "--start=0x0", "--file=$((Resolve-Path $Restore).Path)")
+    } elseif ($Map) {
+        $path = (Resolve-Path $Map).Path
+        $size = (Get-Item $path).Length
+        # 8 MB part, and the map starts at 4 MB: anything larger would run off
+        # the end of the chip, which the flasher will not tell you.
+        if ($size -gt (0x800000 - 0x400000)) { throw "map is $size bytes; only $((0x800000 - 0x400000)) fit above $MapAddress" }
+        Write-Output "writing $([math]::Round($size / 1MB, 2)) MB of map at $MapAddress"
+        Invoke-Flasher @("--flash", "--write", "--start=$MapAddress", "--file=$path")
     } else {
         if (-not (Test-Path build\build_out\bikenav_bl616.bin)) { throw "Build first: .\build.ps1" }
         Invoke-Flasher @("--config=flash_prog_cfg.ini")

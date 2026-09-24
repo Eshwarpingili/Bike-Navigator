@@ -93,6 +93,12 @@ typedef struct {
     uint8_t route_points;
     uint8_t route_unit_m;
 
+    /* Where the rider is, for drawing the stored map around them. Degrees times
+     * 1e7, which is about a centimetre - far finer than any of this needs. */
+    int32_t lat_e7, lon_e7;
+    uint16_t heading_deci;  /* compass degrees times 10 */
+    bool position_valid;
+
     uint32_t last_packet_ms; /* uptime of the last navigation packet (link health) */
     uint32_t last_change_ms; /* uptime of the last packet that said something new */
     uint32_t version;        /* bumps on every change, so the UI can skip redraws */

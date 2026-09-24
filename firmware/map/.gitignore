@@ -1,0 +1,3 @@
+# Generated map data: rebuild with tools/build_map.py rather than committing megabytes.
+*.bin
+map_cache/

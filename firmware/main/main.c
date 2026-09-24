@@ -23,6 +23,7 @@
 #include "backlight.h"
 #include "ble_nav.h"
 #include "health.h"
+#include "mapdata.h"
 #include "nav_state.h"
 #include "prefs.h"
 #include "ui.h"
@@ -140,6 +141,7 @@ int main(void)
     }
 
     prefs_init();
+    mapdata_init(); /* no map flashed is not a fault; the board just draws none */
     nav_state_init();
     health_init();
 

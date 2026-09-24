@@ -107,6 +107,21 @@ enum Packet {
 
     /// The board's fonts are ASCII only: transliterate ("Hyderabad" stays, "Café" -> "Cafe",
     /// Devanagari/Telugu -> Latin) and drop anything left over.
+    /// Where the rider is and which way they are pointing, so the board can
+    /// draw the streets it has stored around them.
+    ///
+    /// Degrees times 1e7 is about a centimetre - far finer than anything here
+    /// needs, and it keeps the whole thing to eleven bytes.
+    static func position(_ coordinate: CLLocationCoordinate2D, heading: Double) -> Data {
+        var d = Data([0x06])
+        d.appendLE(Int32((coordinate.latitude * 1e7).rounded()))
+        d.appendLE(Int32((coordinate.longitude * 1e7).rounded()))
+        var h = heading.isFinite ? heading.truncatingRemainder(dividingBy: 360) : 0
+        if h < 0 { h += 360 }
+        d.appendLE(UInt16((h * 10).rounded()))
+        return d
+    }
+
     /// The shape of the road ahead, ready to draw.
     ///
     /// The phone does the projection because it is the side with the route, the

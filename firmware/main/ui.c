@@ -7,6 +7,7 @@
 #include "arrows.h"
 #include "backlight.h"
 #include "logbuf.h"
+#include "mapdata.h"
 #include "lvgl.h"
 #include "prefs.h"
 
@@ -17,6 +18,9 @@
 #define HOME_AFTER_DISCONNECT_MS 15000
 /* How long the phone link must stay down before the log takes the screen. */
 #define DIAG_AFTER_MS 25000
+/* How much ground the map shows across the screen: far enough to see the next
+ * junction coming, close enough that side streets are still separate lines. */
+#define MAP_METRES_ACROSS 700
 
 /* Daylight hours, when the screen is fighting the sun and wants a light face. */
 #define LIGHT_FROM_MIN (7 * 60)
@@ -149,6 +153,10 @@ static struct {
     lv_obj_t *map_arrow;   /* the turn, so the map is safe to ride on */
     lv_obj_t *map_dist;
     lv_obj_t *map_street;
+    lv_obj_t *map_roads;   /* the stored street network, under everything else */
+    int32_t map_lat, map_lon;
+    uint16_t map_head;
+    bool map_pos;
 
     lv_obj_t *call;        /* takes the whole screen while the phone rings */
     lv_obj_t *call_who;
@@ -338,6 +346,107 @@ static void apply_theme(void)
     lv_obj_set_style_text_color(ui.bar_right, g_pal.good, 0);
     lv_obj_set_style_img_recolor(ui.home_arrow, g_pal.accent, 0);
     lv_obj_set_style_img_recolor(ui.then_arrow, g_pal.dim, 0);
+}
+
+/* ---------------- the stored street network ---------------- */
+
+/* Turning stored roads into pixels.
+ *
+ * Integer throughout, using LVGL's own sine table: this runs over a few hundred
+ * points on every redraw, on a chip with no floating point worth the name.
+ *
+ * Degrees are 1e-7 units, so a degree of latitude is 1e7 of them and is
+ * 111320 m; k_lat is therefore pixels per unit, carried with a 16-bit fraction
+ * because one unit is about a centimetre and a pixel is about two metres.
+ */
+typedef struct {
+    lv_draw_ctx_t *ctx;
+    lv_coord_t cx, cy;      /* where the rider sits on screen */
+    int32_t k_lat, k_lon;   /* pixels per 1e-7 degree, 16-bit fraction */
+    int32_t sin_h, cos_h;
+    int32_t lat0, lon0;
+    lv_coord_t w, h;
+} map_render_t;
+
+static void road_style(uint8_t road_class, lv_draw_line_dsc_t *dsc)
+{
+    switch (road_class) {
+        case 1: dsc->color = COL_AMBER; dsc->width = 5; break;  /* motorway, trunk */
+        case 2: dsc->color = COL_TEXT;  dsc->width = 4; break;  /* primary */
+        case 3: dsc->color = COL_DIM;   dsc->width = 3; break;  /* secondary */
+        default: dsc->color = COL_DIM;  dsc->width = 2; break;  /* the rest */
+    }
+}
+
+static void draw_one_way(const map_way_t *way, void *user)
+{
+    map_render_t *r = user;
+    lv_draw_line_dsc_t dsc;
+    lv_point_t prev = { 0, 0 };
+    bool have_prev = false;
+
+    lv_draw_line_dsc_init(&dsc);
+    road_style(way->road_class, &dsc);
+    dsc.round_start = 1;
+    dsc.round_end = 1;
+
+    for (uint8_t i = 0; i < way->count; i++) {
+        int32_t north = ((way->lat_e7[i] - r->lat0) * r->k_lat) >> 16;
+        int32_t east = ((way->lon_e7[i] - r->lon0) * r->k_lon) >> 16;
+        /* Turn the world so the way ahead points up the screen. */
+        int32_t x = (east * r->cos_h - north * r->sin_h) >> 15;
+        int32_t y = (north * r->cos_h + east * r->sin_h) >> 15;
+        lv_point_t p = { (lv_coord_t)(r->cx + x), (lv_coord_t)(r->cy - y) };
+
+        if (have_prev) {
+            /* Skip what is nowhere near the screen. LVGL would clip it anyway,
+             * but not before doing the work of setting the line up. */
+            bool both_off = (p.x < -40 && prev.x < -40) || (p.x > r->w + 40 && prev.x > r->w + 40) ||
+                            (p.y < -40 && prev.y < -40) || (p.y > r->h + 40 && prev.y > r->h + 40);
+            if (!both_off) {
+                lv_draw_line(r->ctx, &dsc, &prev, &p);
+            }
+        }
+        prev = p;
+        have_prev = true;
+    }
+}
+
+static void map_roads_draw(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) {
+        return;
+    }
+    if (!ui.map_pos || !mapdata_ready()) {
+        return;
+    }
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_area_t area;
+    lv_obj_get_coords(obj, &area);
+
+    map_render_t r;
+    r.ctx = lv_event_get_draw_ctx(e);
+    r.w = lv_area_get_width(&area);
+    r.h = lv_area_get_height(&area);
+    /* The rider sits low and centred: nearly everything that matters is ahead,
+     * and the little behind is worth seeing to recognise the turn just taken. */
+    r.cx = area.x1 + r.w / 2;
+    r.cy = area.y1 + r.h - 46;
+    r.lat0 = ui.map_lat;
+    r.lon0 = ui.map_lon;
+
+    /* Pixels per metre, then per 1e-7 degree, with 16 bits of fraction. */
+    int32_t px_per_m_fx = ((int32_t)r.w << 16) / MAP_METRES_ACROSS;
+    r.k_lat = (int32_t)(((int64_t)px_per_m_fx * 11132) / 1000000);
+    /* A degree of longitude shrinks with latitude; cos is LVGL's, scaled 1<<15. */
+    int32_t coslat = lv_trigo_cos((int16_t)(ui.map_lat / 10000000));
+    r.k_lon = (int32_t)(((int64_t)r.k_lat * coslat) >> 15);
+
+    int16_t heading = (int16_t)((ui.map_head / 10) % 360);
+    r.sin_h = lv_trigo_sin(heading);
+    r.cos_h = lv_trigo_cos(heading);
+
+    mapdata_each_way(ui.map_lat, ui.map_lon, 1, draw_one_way, &r);
 }
 
 void ui_init(const char *device_name)
@@ -590,6 +699,10 @@ void ui_init(const char *device_name)
      * only a scale factor, chosen so the whole of what was sent fits. */
     ui.map = box(scr, W, H - 26);
     lv_obj_align(ui.map, LV_ALIGN_TOP_LEFT, 0, 26);
+
+    ui.map_roads = box(ui.map, W, H - 26);
+    lv_obj_align(ui.map_roads, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_add_event_cb(ui.map_roads, map_roads_draw, LV_EVENT_DRAW_MAIN, NULL);
 
     ui.map_line = lv_line_create(ui.map);
     lv_obj_set_style_line_color(ui.map_line, COL_ACCENT, 0);
@@ -924,6 +1037,19 @@ static lv_point_t g_map_points[NAV_ROUTE_MAX];
 
 static void draw_map(const nav_state_t *s)
 {
+    if (s->position_valid) {
+        bool moved = !ui.map_pos || s->lat_e7 != ui.map_lat || s->lon_e7 != ui.map_lon ||
+                     s->heading_deci != ui.map_head;
+        ui.map_lat = s->lat_e7;
+        ui.map_lon = s->lon_e7;
+        ui.map_head = s->heading_deci;
+        ui.map_pos = true;
+        if (moved) {
+            lv_obj_invalidate(ui.map_roads);
+        }
+    }
+    set_hidden(ui.map_roads, !ui.map_pos || !mapdata_ready());
+
     /* Same instruction as the turn-by-turn screen, smaller. */
     const lv_img_dsc_t *img = s->mode != NAV_MODE_IDLE
         ? arrow_for_direction(s->direction, false) : NULL;

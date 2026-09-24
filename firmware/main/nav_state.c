@@ -142,6 +142,18 @@ static bool apply_locked(const uint8_t *d, uint16_t len, uint32_t now_ms)
             }
             return true;
 
+        case 0x06: /* where the rider is, and which way they are pointing */
+            if (len < 11) {
+                return false;
+            }
+            g_state.lat_e7 = (int32_t)((uint32_t)d[1] | ((uint32_t)d[2] << 8) |
+                                       ((uint32_t)d[3] << 16) | ((uint32_t)d[4] << 24));
+            g_state.lon_e7 = (int32_t)((uint32_t)d[5] | ((uint32_t)d[6] << 8) |
+                                       ((uint32_t)d[7] << 16) | ((uint32_t)d[8] << 24));
+            g_state.heading_deci = (uint16_t)((uint16_t)d[9] | ((uint16_t)d[10] << 8));
+            g_state.position_valid = true;
+            return true;
+
         case 0x04: /* idle */
             s->mode = NAV_MODE_IDLE;
             s->direction = DIR_NONE;

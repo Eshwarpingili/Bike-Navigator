@@ -11,6 +11,7 @@ target_sources(app PRIVATE
     main/arrows.c
     main/ble_nav.c
     main/logbuf.c
+    main/mapdata.c
     main/health.c
     main/backlight.c
     main/nav_state.c
