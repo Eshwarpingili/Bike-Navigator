@@ -69,6 +69,7 @@ typedef enum {
     SCR_NAV,
     SCR_MUSIC,
     SCR_SETTINGS,
+    SCR_MAP,
 } screen_t;
 
 /* Manual brightness moves in these steps. Nothing below BL_MIN_PERCENT, so the
@@ -113,6 +114,7 @@ static struct {
     lv_obj_t *idle_msg;    /* on the music tile, when nothing is playing */
     lv_obj_t *tile_clock;
     lv_obj_t *idle_clock;
+    lv_obj_t *tile_map;    /* replaces the clock while a route is running */
     lv_obj_t *tile_set;    /* tap for brightness and volume */
     lv_obj_t *tile_set_val;
 
@@ -137,6 +139,13 @@ static struct {
     lv_obj_t *s_vol_val;
     lv_obj_t *s_vol_up;
     lv_obj_t *s_auto;
+
+    lv_obj_t *map;         /* the route ahead, drawn heading-up */
+    lv_obj_t *map_back;
+    lv_obj_t *map_line;
+    lv_obj_t *map_me;      /* the rider, always at the same spot: this is a
+                            * heading-up view, so the rider does not move */
+    lv_obj_t *map_scale;
 
     lv_obj_t *call;        /* takes the whole screen while the phone rings */
     lv_obj_t *call_who;
@@ -287,16 +296,16 @@ static void apply_theme(void)
                             button_label(ui.s_bl_up), button_label(ui.s_vol_down),
                             button_label(ui.s_vol_up), button_label(ui.m_back),
                             button_label(ui.s_back), button_label(ui.s_auto),
-                            ui.m_vol_val, ui.s_vol_val };
+                            ui.m_vol_val, ui.s_vol_val, button_label(ui.map_back) };
     lv_obj_t *on_dim[] = { ui.status, ui.then_label, ui.artist, ui.idle_msg, ui.home_street,
                            ui.home_none, ui.m_artist, ui.tile_set_val, ui.s_tap,
-                           ui.link_state, ui.link_state2, ui.log_label };
+                           ui.map_scale, ui.link_state, ui.link_state2, ui.log_label };
     /* The tiles and every control share the card colour. The call buttons do
      * not: green and red are the whole point of them. */
     lv_obj_t *on_card[] = { ui.tile_nav, ui.tile_media, ui.tile_clock, ui.tile_set,
                             ui.m_prev, ui.m_play, ui.m_next, ui.m_vol_down, ui.m_vol_up,
                             ui.s_bl_down, ui.s_bl_up, ui.s_vol_down, ui.s_vol_up,
-                            ui.m_back, ui.s_back, ui.s_auto };
+                            ui.m_back, ui.s_back, ui.s_auto, ui.map_back };
 
     lv_obj_set_style_bg_color(lv_scr_act(), g_pal.bg, 0);
     for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
@@ -458,10 +467,16 @@ void ui_init(const char *device_name)
     lv_label_set_long_mode(ui.idle_msg, LV_LABEL_LONG_WRAP);
     lv_obj_center(ui.idle_msg);
 
+    /* Clock when there is nothing to navigate, the way in to the map when there
+     * is. The time is already in the top bar, so this tile is better spent on
+     * whichever of the two is actually useful at the time. */
     ui.tile_clock = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, MIN_GAP, row2);
     ui.idle_clock = label(ui.tile_clock, &lv_font_montserrat_48, COL_TEXT);
     lv_obj_center(ui.idle_clock);
+    ui.tile_map = label(ui.tile_clock, &lv_font_montserrat_20, COL_ACCENT);
+    lv_label_set_text(ui.tile_map, LV_SYMBOL_GPS " Map");
+    lv_obj_center(ui.tile_map);
 
     ui.tile_set = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_set, LV_ALIGN_TOP_LEFT, col2, row2);
@@ -561,6 +576,31 @@ void ui_init(const char *device_name)
     ui.s_tap = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
     lv_obj_align(ui.s_tap, LV_ALIGN_TOP_RIGHT, -12, 188);
 
+    /* The route ahead. The phone sends it already turned so that forward is up
+     * and measured from where the rider is, so there is no trigonometry here -
+     * only a scale factor, chosen so the whole of what was sent fits. */
+    ui.map = box(scr, W, H - 26);
+    lv_obj_align(ui.map, LV_ALIGN_TOP_LEFT, 0, 26);
+
+    ui.map_line = lv_line_create(ui.map);
+    lv_obj_set_style_line_color(ui.map_line, COL_ACCENT, 0);
+    lv_obj_set_style_line_width(ui.map_line, 5, 0);
+    lv_obj_set_style_line_rounded(ui.map_line, true, 0);
+    lv_obj_set_pos(ui.map_line, 0, 0);
+
+    ui.map_me = box(ui.map, 14, 14);
+    lv_obj_set_style_bg_color(ui.map_me, COL_TEXT, 0);
+    lv_obj_set_style_bg_opa(ui.map_me, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(ui.map_me, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_color(ui.map_me, g_pal.bg, 0);
+    lv_obj_set_style_border_width(ui.map_me, 2, 0);
+
+    ui.map_scale = label(ui.map, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_align(ui.map_scale, LV_ALIGN_BOTTOM_RIGHT, -10, -6);
+
+    ui.map_back = button(ui.map, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
+    lv_obj_align(ui.map_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
+
     /* An incoming call: nothing else on the screen, two large targets. */
     ui.call = box(scr, W, H - 26);
     lv_obj_align(ui.call, LV_ALIGN_TOP_LEFT, 0, 26);
@@ -589,6 +629,7 @@ void ui_init(const char *device_name)
     lv_obj_add_flag(ui.music, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.settings, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.call, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.map, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.diag, LV_OBJ_FLAG_HIDDEN);
     apply_theme();
 
@@ -771,6 +812,9 @@ static void draw_brightness(lv_obj_t *target)
 
 static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
 {
+    bool has_map = s->mode != NAV_MODE_IDLE;
+    set_hidden(ui.idle_clock, has_map);
+    set_hidden(ui.tile_map, !has_map);
     lv_label_set_text(ui.idle_clock, minute < 0 ? "--:--" : hhmm);
 
     bool music = s->music_valid;
@@ -829,6 +873,59 @@ static void draw_volume(lv_obj_t *target, const nav_state_t *s)
         lv_label_set_text_fmt(target, "%u%%", (unsigned)s->volume_percent);
     } else {
         lv_label_set_text(target, "--");
+    }
+}
+
+/* LVGL keeps the pointer it is given rather than copying, so the points have
+ * to outlive the call. */
+static lv_point_t g_map_points[NAV_ROUTE_MAX];
+
+static void draw_map(const nav_state_t *s)
+{
+    lv_coord_t w = lv_obj_get_width(ui.map);
+    lv_coord_t h = lv_obj_get_height(ui.map);
+    /* The rider sits low and centred, because almost all of what matters is
+     * ahead; the little behind is worth seeing to know the turn just taken. */
+    lv_coord_t cx = w / 2;
+    lv_coord_t cy = h - 46;
+
+    lv_obj_align(ui.map_me, LV_ALIGN_TOP_LEFT, cx - 7, cy - 7);
+
+    if (s->route_points < 2) {
+        set_hidden(ui.map_line, true);
+        lv_label_set_text(ui.map_scale, s->mode == NAV_MODE_IDLE ? "No route" : "Waiting for the route");
+        return;
+    }
+    set_hidden(ui.map_line, false);
+
+    /* One scale for both axes, or the road bends in ways it does not. */
+    int32_t max_x = 1, max_y = 1;
+    for (uint8_t i = 0; i < s->route_points; i++) {
+        int32_t ax = s->route_x[i] < 0 ? -s->route_x[i] : s->route_x[i];
+        int32_t ay = s->route_y[i] < 0 ? -s->route_y[i] : s->route_y[i];
+        if (ax > max_x) max_x = ax;
+        if (ay > max_y) max_y = ay;
+    }
+    int32_t sx = ((int32_t)(cx - 14) * 256) / max_x;
+    int32_t sy = ((int32_t)(cy - 14) * 256) / max_y;
+    int32_t sc = sx < sy ? sx : sy;
+    if (sc < 1) {
+        sc = 1;
+    }
+
+    for (uint8_t i = 0; i < s->route_points; i++) {
+        g_map_points[i].x = (lv_coord_t)(cx + ((int32_t)s->route_x[i] * sc) / 256);
+        g_map_points[i].y = (lv_coord_t)(cy - ((int32_t)s->route_y[i] * sc) / 256);
+    }
+    lv_line_set_points(ui.map_line, g_map_points, s->route_points);
+
+    /* How far the view reaches, so the drawing has a sense of distance. */
+    uint32_t reach = (uint32_t)max_y * s->route_unit_m;
+    if (reach >= 1000) {
+        lv_label_set_text_fmt(ui.map_scale, "%u.%u km ahead", (unsigned)(reach / 1000),
+                              (unsigned)((reach % 1000) / 100));
+    } else {
+        lv_label_set_text_fmt(ui.map_scale, "%u m ahead", (unsigned)reach);
     }
 }
 
@@ -969,8 +1066,10 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
                 ui.screen = SCR_MUSIC;
             } else if (hit(ui.tile_set, x, y)) {
                 ui.screen = SCR_SETTINGS;
+            } else if (hit(ui.tile_clock, x, y) && !lv_obj_has_flag(ui.tile_map, LV_OBJ_FLAG_HIDDEN)) {
+                ui.screen = SCR_MAP;
             } else {
-                break; /* the clock tile is not a button */
+                break; /* the clock is a read-out, not a button */
             }
             invalidate();
             break;
@@ -1015,6 +1114,10 @@ ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
             } else {
                 go_home();
             }
+            break;
+
+        case SCR_MAP:
+            go_home();
             break;
 
         case SCR_NAV:
@@ -1084,7 +1187,7 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
      * to the tiles would be undone a tenth of a second later. */
     if (navigating && !was_navigating && ui.screen == SCR_HOME) {
         ui.screen = SCR_NAV;
-    } else if (!navigating && ui.screen == SCR_NAV) {
+    } else if (!navigating && (ui.screen == SCR_NAV || ui.screen == SCR_MAP)) {
         ui.screen = SCR_HOME;
     }
 
@@ -1098,6 +1201,7 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
     set_hidden(ui.idle, !(normal && ui.screen == SCR_HOME));
     set_hidden(ui.music, !(normal && ui.screen == SCR_MUSIC));
     set_hidden(ui.settings, !(normal && ui.screen == SCR_SETTINGS));
+    set_hidden(ui.map, !(normal && ui.screen == SCR_MAP));
 
     char hhmm[8];
     fmt_hhmm(minute, hhmm, sizeof(hhmm));
@@ -1148,6 +1252,9 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
             break;
         case SCR_MUSIC:
             draw_music(s);
+            break;
+        case SCR_MAP:
+            draw_map(s);
             break;
         case SCR_SETTINGS:
             draw_brightness(ui.s_bl_val);

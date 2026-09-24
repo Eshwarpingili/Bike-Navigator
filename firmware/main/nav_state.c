@@ -123,10 +123,32 @@ static bool apply_locked(const uint8_t *d, uint16_t len, uint32_t now_ms)
             s->clock_valid = true;
             return true;
 
+        case 0x05: /* route shape ahead, already rotated heading-up by the phone */
+            if (len < 3) {
+                return false;
+            }
+            {
+                uint8_t count = d[1];
+                uint8_t unit = d[2];
+                if (count > NAV_ROUTE_MAX || unit == 0 || len < (uint16_t)(3 + 2 * count)) {
+                    return false;
+                }
+                for (uint8_t i = 0; i < count; i++) {
+                    g_state.route_x[i] = (int8_t)d[3 + 2 * i];
+                    g_state.route_y[i] = (int8_t)d[4 + 2 * i];
+                }
+                g_state.route_points = count;
+                g_state.route_unit_m = unit;
+            }
+            return true;
+
         case 0x04: /* idle */
             s->mode = NAV_MODE_IDLE;
             s->direction = DIR_NONE;
             s->flags = 0;
+            /* The shape goes with the route. Leaving it behind would draw the
+             * last road the rider was on as though it were still ahead. */
+            s->route_points = 0;
             return true;
 
         default:

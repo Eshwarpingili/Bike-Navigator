@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 /// Direction codes shared with the board. See PROTOCOL.md.
@@ -106,6 +107,52 @@ enum Packet {
 
     /// The board's fonts are ASCII only: transliterate ("Hyderabad" stays, "Café" -> "Cafe",
     /// Devanagari/Telugu -> Latin) and drop anything left over.
+    /// The shape of the road ahead, ready to draw.
+    ///
+    /// The phone does the projection because it is the side with the route, the
+    /// heading and a floating point unit; the board only scales what arrives to
+    /// pixels. Points are turned so that forward is up and measured from where
+    /// the rider is, in whole units of `unit` metres, which is chosen so the
+    /// furthest point still fits in a signed byte. That keeps the whole path
+    /// inside one 128-byte write.
+    static func routeShape(path: RoutePath, along: Double, heading: Double) -> Data? {
+        let maxPoints = 60
+        let behind = 60.0, ahead = 900.0
+        guard path.points.count > 1 else { return nil }
+        let from = max(0, along - behind)
+        let to = min(path.length, along + ahead)
+        guard to - from > 20 else { return nil }
+
+        let origin = path.coordinate(at: along)
+        guard CLLocationCoordinate2DIsValid(origin) else { return nil }
+        let step = (to - from) / Double(maxPoints - 1)
+        let ch = cos(heading * .pi / 180), sh = sin(heading * .pi / 180)
+
+        var xs = [Double](), ys = [Double]()
+        xs.reserveCapacity(maxPoints)
+        ys.reserveCapacity(maxPoints)
+        for i in 0..<maxPoints {
+            let c = path.coordinate(at: from + step * Double(i))
+            guard CLLocationCoordinate2DIsValid(c) else { continue }
+            let midLat = (c.latitude + origin.latitude) / 2 * .pi / 180
+            let east = (c.longitude - origin.longitude) * cos(midLat) * Geo.metresPerDegree
+            let north = (c.latitude - origin.latitude) * Geo.metresPerDegree
+            // Rotate the world so the rider's heading points up the screen.
+            xs.append(east * ch - north * sh)
+            ys.append(north * ch + east * sh)
+        }
+        guard xs.count >= 2 else { return nil }
+
+        let furthest = max(xs.map { abs($0) }.max() ?? 0, ys.map { abs($0) }.max() ?? 0)
+        let unit = max(1, min(255, Int((furthest / 127).rounded(.up))))
+        var d = Data([0x05, UInt8(xs.count), UInt8(unit)])
+        for i in 0..<xs.count {
+            d.append(UInt8(bitPattern: Int8(clamping: Int((xs[i] / Double(unit)).rounded()))))
+            d.append(UInt8(bitPattern: Int8(clamping: Int((ys[i] / Double(unit)).rounded()))))
+        }
+        return d
+    }
+
     static func asciiText(_ s: String, maxBytes: Int) -> Data {
         let latin = s.applyingTransform(.toLatin, reverse: false) ?? s
         let plain = latin.applyingTransform(.stripDiacritics, reverse: false) ?? latin

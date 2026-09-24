@@ -26,6 +26,11 @@ enum {
 #define NAV_TEXT_MAX    16
 #define NAV_MUSIC_MAX   40
 #define NAV_CALLER_MAX  28
+/* Route shape ahead of the rider. The phone does the projection - it has the
+ * route and the heading and a floating point unit - and sends points already
+ * turned so that forward is up, in units of route_unit_m metres. The board
+ * only has to scale them to pixels. 60 points is what fits in one write. */
+#define NAV_ROUTE_MAX   60
 
 typedef enum {
     NAV_MODE_IDLE = 0,  /* connected or not, no route */
@@ -81,6 +86,12 @@ typedef struct {
     bool apple_sub_lost;
     uint8_t apple_ccc_err;  /* phone's answer to enabling notifications */
     uint8_t apple_sec;      /* link security level */
+
+    /* x is right of the way ahead, y is forward, both in route_unit_m metres. */
+    int8_t route_x[NAV_ROUTE_MAX];
+    int8_t route_y[NAV_ROUTE_MAX];
+    uint8_t route_points;
+    uint8_t route_unit_m;
 
     uint32_t last_packet_ms; /* uptime of the last navigation packet (link health) */
     uint32_t last_change_ms; /* uptime of the last packet that said something new */

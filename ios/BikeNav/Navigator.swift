@@ -28,6 +28,8 @@ final class Navigator: NSObject, ObservableObject {
     private var lastRerouteAt = Date.distantPast
     private var rerouting = false
     private var arrivedAt: Date?
+    /// Where the rider was when the board was last sent the shape of the road.
+    private var shapeSentAlong: Double?
     private var heartbeat: Timer?
     private var demoTimer: Timer?
 
@@ -130,6 +132,7 @@ final class Navigator: NSObject, ObservableObject {
         matchedSegment = 0
         offRouteFixes = 0
         rerouting = false
+        shapeSentAlong = nil
         if phase == .planning { phase = .ready }
         if phase == .navigating, let loc = lastLocation { update(with: loc) }
     }
@@ -181,8 +184,25 @@ final class Navigator: NSObject, ObservableObject {
                          gpsWeak: weakFix)
         guidance = g
         link.send(Packet.navigation(g))
+        sendShape(path: path, along: p.along, location: loc)
 
         if let t = arrivedAt, Date().timeIntervalSince(t) > 20 { stop() }
+    }
+
+    /// The road ahead, for the board to draw. Only worth resending once the
+    /// rider has actually moved along it: the board redraws on change, and the
+    /// link is slow enough that sending an identical shape every fix would
+    /// crowd out the turn instructions, which matter more.
+    private func sendShape(path: RoutePath, along: Double, location: CLLocation) {
+        if let last = shapeSentAlong, abs(along - last) < 40 { return }
+        // Course is unreliable below walking pace, and the route's own heading
+        // is steadier anyway - the map should not spin while stopped at a light.
+        let heading = location.course >= 0 && location.speed > 2
+            ? location.course
+            : path.heading(after: along)
+        guard let packet = Packet.routeShape(path: path, along: along, heading: heading) else { return }
+        shapeSentAlong = along
+        link.send(packet)
     }
 
     private func reroute(from coordinate: CLLocationCoordinate2D) {
@@ -195,6 +215,9 @@ final class Navigator: NSObject, ObservableObject {
 
     private func resendState() {
         link.send(Packet.clock(), force: true)
+        /* A board that has just reconnected has no shape at all, so make the
+         * next fix resend one rather than waiting 40 m for the rider to move. */
+        shapeSentAlong = nil
         if phase == .navigating, let g = guidance {
             link.send(Packet.navigation(g), force: true)
         } else if demoTimer == nil {
