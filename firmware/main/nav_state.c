@@ -179,6 +179,40 @@ void nav_state_set_music_playing(bool playing)
     xSemaphoreGive(g_lock);
 }
 
+void nav_state_set_call(uint32_t uid, const char *name, uint16_t len,
+                        bool can_answer, bool can_decline)
+{
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    /* The name arrives in a second message, after the ring itself. Keep what is
+     * already there rather than blanking the caller each time the phone
+     * repeats the notification. */
+    if (name != NULL && len > 0) {
+        copy_text(g_state.call_name, NAV_CALLER_MAX + 1, (const uint8_t *)name, len);
+    } else if (!g_state.call_ringing || g_state.call_uid != uid) {
+        g_state.call_name[0] = '\0';
+    }
+    g_state.call_ringing = true;
+    g_state.call_uid = uid;
+    g_state.call_can_answer = can_answer;
+    g_state.call_can_decline = can_decline;
+    g_state.version++;
+    xSemaphoreGive(g_lock);
+}
+
+void nav_state_clear_call(void)
+{
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (g_state.call_ringing) {
+        g_state.version++;
+    }
+    g_state.call_ringing = false;
+    g_state.call_name[0] = '\0';
+    g_state.call_uid = 0;
+    g_state.call_can_answer = false;
+    g_state.call_can_decline = false;
+    xSemaphoreGive(g_lock);
+}
+
 void nav_state_clear_music(void)
 {
     xSemaphoreTake(g_lock, portMAX_DELAY);

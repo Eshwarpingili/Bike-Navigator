@@ -3,10 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "apple_link.h"
 #include "arrows.h"
 #include "backlight.h"
 #include "logbuf.h"
 #include "lvgl.h"
+#include "prefs.h"
 
 #define STALE_MS 8000
 /* Sygic never says "route finished", so drop back to the home screen once the
@@ -59,6 +61,24 @@ static void set_palette(bool light)
 #define COL_BAR    (g_pal.bar)
 #define COL_ACCENT (g_pal.accent)
 
+/* Which face is showing. A ringing phone and a broken link take the screen on
+ * their own account, so they are not choices in here - they override at draw
+ * time and hand it back afterwards. */
+typedef enum {
+    SCR_HOME = 0,
+    SCR_NAV,
+    SCR_MUSIC,
+    SCR_SETTINGS,
+} screen_t;
+
+/* Manual brightness moves in these steps. Nothing below BL_MIN_PERCENT, so the
+ * screen can always be read. */
+#define BL_STEP 20
+#define BL_LOWEST 20
+/* Day and night levels when brightness is left on automatic. */
+#define BL_DAY 100
+#define BL_NIGHT 40
+
 static struct {
     bool landscape;
     const char *device_name;
@@ -81,17 +101,41 @@ static struct {
     lv_obj_t *bar_mid;
     lv_obj_t *bar_right;
 
-    lv_obj_t *idle;     /* home screen: two cards, route above, music below */
-    lv_obj_t *card_nav;
+    lv_obj_t *idle;        /* home screen: four tiles */
+    lv_obj_t *tile_nav;    /* tap for the full navigation screen */
     lv_obj_t *home_arrow;
     lv_obj_t *home_dist;
     lv_obj_t *home_street;
-    lv_obj_t *idle_clock;  /* fills the route card when there is no route */
-    lv_obj_t *card_media;
-    lv_obj_t *idle_msg;
+    lv_obj_t *home_none;   /* "No route", so the tile is never blank */
+    lv_obj_t *tile_media;  /* tap for the full music screen */
     lv_obj_t *track;
     lv_obj_t *artist;
-    lv_obj_t *transport;  /* prev / play-pause / next */
+    lv_obj_t *idle_msg;    /* on the music tile, when nothing is playing */
+    lv_obj_t *tile_clock;
+    lv_obj_t *idle_clock;
+    lv_obj_t *tile_set;    /* tap for brightness and volume */
+    lv_obj_t *tile_set_val;
+
+    lv_obj_t *music;       /* full screen: now playing, transport, volume */
+    lv_obj_t *m_title;
+    lv_obj_t *m_artist;
+    lv_obj_t *m_prev;
+    lv_obj_t *m_play;
+    lv_obj_t *m_next;
+    lv_obj_t *m_vol_down;
+    lv_obj_t *m_vol_up;
+
+    lv_obj_t *settings;    /* full screen: brightness and volume */
+    lv_obj_t *s_bl_down;
+    lv_obj_t *s_bl_val;
+    lv_obj_t *s_bl_up;
+    lv_obj_t *s_vol_down;
+    lv_obj_t *s_vol_up;
+
+    lv_obj_t *call;        /* takes the whole screen while the phone rings */
+    lv_obj_t *call_who;
+    lv_obj_t *call_answer;
+    lv_obj_t *call_decline;
 
     lv_obj_t *diag;        /* only when the phone link is not working */
     lv_obj_t *link_state;
@@ -99,11 +143,15 @@ static struct {
     lv_obj_t *log_label;   /* firmware log, the board's only console */
     unsigned drawn_log;
 
+    screen_t screen;
+    bool drawn_ringing;    /* so a call can restore whatever was on screen */
+    screen_t before_call;
     uint32_t drawn_version;
     int drawn_minute;
     bool drawn_stale;
     bool drawn_navigating;
     bool drawn_light;
+    uint8_t drawn_backlight;
     uint32_t now_ms;
 } ui;
 
@@ -143,19 +191,81 @@ static lv_obj_t *card(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
     return o;
 }
 
+/* A card with one symbol centred in it, which is what every control here is.
+ * Hit testing reads the card's own coordinates, so nothing is hard-coded. */
+static lv_obj_t *button(lv_obj_t *parent, lv_coord_t w, lv_coord_t h,
+                        const char *symbol, const lv_font_t *font)
+{
+    lv_obj_t *b = card(parent, w, h);
+    lv_obj_t *l = label(b, font, g_pal.text);
+    lv_label_set_text(l, symbol);
+    lv_obj_center(l);
+    return b;
+}
+
+static lv_obj_t *button_label(lv_obj_t *b)
+{
+    return lv_obj_get_child(b, 0);
+}
+
+/* True when the point is inside the object, with a margin: this is aimed at
+ * with a thumb, on a bike, without looking. */
+static bool hit(lv_obj_t *o, lv_coord_t x, lv_coord_t y)
+{
+    if (o == NULL || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) {
+        return false;
+    }
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    return x >= a.x1 - 6 && x <= a.x2 + 6 && y >= a.y1 - 6 && y <= a.y2 + 6;
+}
+
+/* Backlight: the rider's setting if there is one, otherwise bright by day and
+ * dim at night. Applied whenever either of those could have changed. */
+static void apply_backlight(bool light)
+{
+    uint8_t want = prefs_brightness();
+    if (want == BRIGHTNESS_AUTO) {
+        want = light ? BL_DAY : BL_NIGHT;
+    }
+    if (want != ui.drawn_backlight) {
+        ui.drawn_backlight = want;
+        backlight_set(want);
+    }
+}
+
 /* Re-colour everything when the day/night palette changes. */
 static void apply_theme(void)
 {
     lv_obj_t *on_text[] = { ui.speed, ui.clock, ui.dist_num, ui.dist_unit, ui.street,
                             ui.bar_left, ui.bar_mid, ui.idle_clock, ui.track,
-                            ui.home_dist, ui.transport };
+                            ui.home_dist, ui.m_title, ui.s_bl_val, ui.call_who,
+                            button_label(ui.m_prev), button_label(ui.m_play),
+                            button_label(ui.m_next), button_label(ui.m_vol_down),
+                            button_label(ui.m_vol_up), button_label(ui.s_bl_down),
+                            button_label(ui.s_bl_up), button_label(ui.s_vol_down),
+                            button_label(ui.s_vol_up) };
     lv_obj_t *on_dim[] = { ui.status, ui.then_label, ui.artist, ui.idle_msg, ui.home_street,
+                           ui.home_none, ui.m_artist, ui.tile_set_val,
                            ui.link_state, ui.link_state2, ui.log_label };
+    /* The tiles and every control share the card colour. The call buttons do
+     * not: green and red are the whole point of them. */
+    lv_obj_t *on_card[] = { ui.tile_nav, ui.tile_media, ui.tile_clock, ui.tile_set,
+                            ui.m_prev, ui.m_play, ui.m_next, ui.m_vol_down, ui.m_vol_up,
+                            ui.s_bl_down, ui.s_bl_up, ui.s_vol_down, ui.s_vol_up };
 
     lv_obj_set_style_bg_color(lv_scr_act(), g_pal.bg, 0);
-    lv_obj_set_style_bg_color(ui.card_nav, g_pal.card, 0);
-    lv_obj_set_style_bg_color(ui.card_media, g_pal.card, 0);
+    for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
+        lv_obj_set_style_bg_color(on_card[i], g_pal.card, 0);
+    }
     lv_obj_set_style_bg_color(ui.bar, g_pal.bar, 0);
+    /* The call buttons follow the palette's green and red, and keep white
+     * glyphs on both: the daytime green is dark enough that the ordinary text
+     * colour would be unreadable on it. */
+    lv_obj_set_style_bg_color(ui.call_answer, g_pal.good, 0);
+    lv_obj_set_style_bg_color(ui.call_decline, COL_RED, 0);
+    lv_obj_set_style_text_color(button_label(ui.call_answer), lv_color_white(), 0);
+    lv_obj_set_style_text_color(button_label(ui.call_decline), lv_color_white(), 0);
 
     for (unsigned i = 0; i < sizeof(on_text) / sizeof(on_text[0]); i++) {
         lv_obj_set_style_text_color(on_text[i], g_pal.text, 0);
@@ -249,60 +359,159 @@ void ui_init(const char *device_name)
     ui.bar_right = label(ui.bar, &lv_font_montserrat_20, COL_GREEN);
     lv_obj_align(ui.bar_right, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    /* Home screen: a route card above a music card, like a phone widget. */
+    /* Home screen: four tiles. Route and music are the two things looked at
+     * while moving, the clock is what gets glanced at at a light, and settings
+     * is the one that can afford to be hunted for. Tapping a tile opens it. */
     ui.idle = box(scr, W, H - 26);
     lv_obj_align(ui.idle, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    lv_coord_t card_w = W - 16;
-    ui.card_nav = card(ui.idle, card_w, 78);
-    lv_obj_align(ui.card_nav, LV_ALIGN_TOP_MID, 0, 0);
+    lv_coord_t tw = (W - 18) / 2;
+    lv_coord_t th = (H - 26 - 18) / 2;
+    lv_coord_t col2 = 6 + tw + 6;
+    lv_coord_t row2 = 6 + th + 6;
 
-    ui.home_arrow = tinted_img(ui.card_nav, COL_ACCENT);
+    ui.tile_nav = card(ui.idle, tw, th);
+    lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, 6, 6);
+
+    ui.home_arrow = tinted_img(ui.tile_nav, COL_ACCENT);
     lv_img_set_zoom(ui.home_arrow, 128); /* the nav-screen arrows at half size */
-    lv_obj_align(ui.home_arrow, LV_ALIGN_LEFT_MID, -18, 0);
+    lv_obj_align(ui.home_arrow, LV_ALIGN_LEFT_MID, -20, -8);
 
-    ui.home_dist = label(ui.card_nav, &lv_font_montserrat_28, COL_TEXT);
-    lv_obj_align(ui.home_dist, LV_ALIGN_TOP_LEFT, 64, 6);
+    ui.home_dist = label(ui.tile_nav, &lv_font_montserrat_28, COL_TEXT);
+    lv_obj_align(ui.home_dist, LV_ALIGN_TOP_RIGHT, -8, 10);
 
-    ui.home_street = label(ui.card_nav, &lv_font_montserrat_16, COL_DIM);
-    lv_obj_set_width(ui.home_street, card_w - 74);
+    ui.home_street = label(ui.tile_nav, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_set_width(ui.home_street, tw - 12);
+    lv_obj_set_style_text_align(ui.home_street, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.home_street, LV_LABEL_LONG_DOT);
-    lv_obj_align(ui.home_street, LV_ALIGN_TOP_LEFT, 64, 44);
+    lv_obj_align(ui.home_street, LV_ALIGN_BOTTOM_MID, 0, -8);
 
-    /* No route: the card carries the time instead, so it is never dead space. */
-    ui.idle_clock = label(ui.card_nav, &lv_font_montserrat_48, COL_TEXT);
-    lv_obj_align(ui.idle_clock, LV_ALIGN_CENTER, 0, 0);
+    ui.home_none = label(ui.tile_nav, &lv_font_montserrat_20, COL_DIM);
+    lv_label_set_text(ui.home_none, "No route");
+    lv_obj_center(ui.home_none);
 
-    ui.card_media = card(ui.idle, card_w, 118);
-    lv_obj_align(ui.card_media, LV_ALIGN_TOP_MID, 0, 86);
+    ui.tile_media = card(ui.idle, tw, th);
+    lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col2, 6);
 
-    ui.track = label(ui.card_media, &lv_font_montserrat_20, COL_TEXT);
-    lv_obj_set_width(ui.track, card_w - 20);
+    ui.track = label(ui.tile_media, &lv_font_montserrat_16, COL_TEXT);
+    lv_obj_set_width(ui.track, tw - 12);
     lv_obj_set_style_text_align(ui.track, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.track, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_align(ui.track, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(ui.track, LV_ALIGN_TOP_MID, 0, 14);
 
-    ui.artist = label(ui.card_media, &lv_font_montserrat_16, COL_DIM);
-    lv_obj_set_width(ui.artist, card_w - 20);
+    ui.artist = label(ui.tile_media, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_set_width(ui.artist, tw - 12);
     lv_obj_set_style_text_align(ui.artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.artist, LV_LABEL_LONG_DOT);
-    lv_obj_align(ui.artist, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_align(ui.artist, LV_ALIGN_TOP_MID, 0, 40);
 
-    /* Lifted clear of the bottom edge, so a thumb does not have to find the rim. */
-    ui.transport = label(ui.card_media, &lv_font_montserrat_28, COL_TEXT);
-    lv_obj_set_width(ui.transport, card_w);
-    lv_obj_set_style_text_align(ui.transport, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.transport, LV_ALIGN_BOTTOM_MID, 0, -14);
-
-    ui.idle_msg = label(ui.card_media, &lv_font_montserrat_16, COL_DIM);
-    lv_obj_set_width(ui.idle_msg, card_w - 20);
+    /* Short text only: the tile has no room for advice, and the diagnostics
+     * screen already exists for that. */
+    ui.idle_msg = label(ui.tile_media, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_set_width(ui.idle_msg, tw - 12);
     lv_obj_set_style_text_align(ui.idle_msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.idle_msg, LV_LABEL_LONG_WRAP);
-    lv_obj_align(ui.idle_msg, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_center(ui.idle_msg);
 
-    /* Diagnostics take over the whole area, but only when the link is broken. */
-    ui.diag = box(ui.idle, W, H - 26);
-    lv_obj_align(ui.diag, LV_ALIGN_TOP_LEFT, 0, 0);
+    ui.tile_clock = card(ui.idle, tw, th);
+    lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, 6, row2);
+    ui.idle_clock = label(ui.tile_clock, &lv_font_montserrat_48, COL_TEXT);
+    lv_obj_center(ui.idle_clock);
+
+    ui.tile_set = card(ui.idle, tw, th);
+    lv_obj_align(ui.tile_set, LV_ALIGN_TOP_LEFT, col2, row2);
+    lv_obj_t *set_icon = label(ui.tile_set, &lv_font_montserrat_28, COL_DIM);
+    lv_label_set_text(set_icon, LV_SYMBOL_SETTINGS);
+    lv_obj_align(set_icon, LV_ALIGN_CENTER, 0, -14);
+    ui.tile_set_val = label(ui.tile_set, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_align(ui.tile_set_val, LV_ALIGN_CENTER, 0, 22);
+
+    /* Full-screen music: the same controls, big enough for a gloved thumb,
+     * plus the phone's volume so it never has to come out of a pocket. */
+    ui.music = box(scr, W, H - 26);
+    lv_obj_align(ui.music, LV_ALIGN_TOP_LEFT, 0, 26);
+
+    ui.m_title = label(ui.music, &lv_font_montserrat_28, COL_TEXT);
+    lv_obj_set_width(ui.m_title, W - 20);
+    lv_obj_set_style_text_align(ui.m_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ui.m_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_align(ui.m_title, LV_ALIGN_TOP_MID, 0, 8);
+
+    ui.m_artist = label(ui.music, &lv_font_montserrat_20, COL_DIM);
+    lv_obj_set_width(ui.m_artist, W - 20);
+    lv_obj_set_style_text_align(ui.m_artist, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ui.m_artist, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui.m_artist, LV_ALIGN_TOP_MID, 0, 46);
+
+    lv_coord_t bw = (W - 56) / 3;
+    ui.m_prev = button(ui.music, bw, 56, LV_SYMBOL_PREV, &lv_font_montserrat_28);
+    lv_obj_align(ui.m_prev, LV_ALIGN_TOP_LEFT, 10, 82);
+    ui.m_play = button(ui.music, bw, 56, LV_SYMBOL_PLAY, &lv_font_montserrat_28);
+    lv_obj_align(ui.m_play, LV_ALIGN_TOP_LEFT, 10 + bw + 18, 82);
+    ui.m_next = button(ui.music, bw, 56, LV_SYMBOL_NEXT, &lv_font_montserrat_28);
+    lv_obj_align(ui.m_next, LV_ALIGN_TOP_LEFT, 10 + 2 * (bw + 18), 82);
+
+    lv_coord_t vw = (W - 40) / 2;
+    ui.m_vol_down = button(ui.music, vw, 52, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_20);
+    lv_obj_align(ui.m_vol_down, LV_ALIGN_TOP_LEFT, 10, 146);
+    ui.m_vol_up = button(ui.music, vw, 52, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_20);
+    lv_obj_align(ui.m_vol_up, LV_ALIGN_TOP_LEFT, 10 + vw + 20, 146);
+
+    /* Settings: brightness and volume, one row each. */
+    ui.settings = box(scr, W, H - 26);
+    lv_obj_align(ui.settings, LV_ALIGN_TOP_LEFT, 0, 26);
+
+    lv_obj_t *bl_head = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
+    lv_label_set_text(bl_head, "Brightness");
+    lv_obj_align(bl_head, LV_ALIGN_TOP_LEFT, 12, 4);
+
+    ui.s_bl_down = button(ui.settings, 76, 56, LV_SYMBOL_MINUS, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_bl_down, LV_ALIGN_TOP_LEFT, 12, 26);
+    ui.s_bl_val = label(ui.settings, &lv_font_montserrat_28, COL_TEXT);
+    lv_obj_align(ui.s_bl_val, LV_ALIGN_TOP_MID, 0, 38);
+    ui.s_bl_up = button(ui.settings, 76, 56, LV_SYMBOL_PLUS, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_bl_up, LV_ALIGN_TOP_RIGHT, -12, 26);
+
+    lv_obj_t *vol_head = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
+    lv_label_set_text(vol_head, "Volume");
+    lv_obj_align(vol_head, LV_ALIGN_TOP_LEFT, 12, 96);
+
+    ui.s_vol_down = button(ui.settings, 76, 56, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_vol_down, LV_ALIGN_TOP_LEFT, 12, 118);
+    ui.s_vol_up = button(ui.settings, 76, 56, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_28);
+    lv_obj_align(ui.s_vol_up, LV_ALIGN_TOP_RIGHT, -12, 118);
+
+    lv_obj_t *back_hint = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
+    lv_label_set_text(back_hint, "Tap the top bar to go back");
+    lv_obj_align(back_hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+    /* An incoming call: nothing else on the screen, two large targets. */
+    ui.call = box(scr, W, H - 26);
+    lv_obj_align(ui.call, LV_ALIGN_TOP_LEFT, 0, 26);
+
+    lv_obj_t *call_head = label(ui.call, &lv_font_montserrat_20, COL_DIM);
+    lv_label_set_text(call_head, "Incoming call");
+    lv_obj_align(call_head, LV_ALIGN_TOP_MID, 0, 8);
+
+    ui.call_who = label(ui.call, &lv_font_montserrat_28, COL_TEXT);
+    lv_obj_set_width(ui.call_who, W - 24);
+    lv_obj_set_style_text_align(ui.call_who, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ui.call_who, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui.call_who, LV_ALIGN_TOP_MID, 0, 44);
+
+    lv_coord_t cw = (W - 36) / 2;
+    ui.call_answer = button(ui.call, cw, 68, LV_SYMBOL_CALL, &lv_font_montserrat_28);
+    lv_obj_set_style_bg_color(ui.call_answer, COL_GREEN, 0);
+    lv_obj_align(ui.call_answer, LV_ALIGN_TOP_LEFT, 12, 112);
+    ui.call_decline = button(ui.call, cw, 68, LV_SYMBOL_CLOSE, &lv_font_montserrat_28);
+    lv_obj_set_style_bg_color(ui.call_decline, COL_RED, 0);
+    lv_obj_align(ui.call_decline, LV_ALIGN_TOP_RIGHT, -12, 112);
+
+    /* Diagnostics take over the whole area, but only when the link is broken.
+     * Parented to the screen rather than to the home view, because it has to
+     * be able to cover any of them. */
+    ui.diag = box(scr, W, H - 26);
+    lv_obj_align(ui.diag, LV_ALIGN_TOP_LEFT, 0, 26);
 
     ui.link_state = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
     lv_obj_align(ui.link_state, LV_ALIGN_BOTTOM_LEFT, 6, -4);
@@ -314,7 +523,13 @@ void ui_init(const char *device_name)
     lv_obj_set_width(ui.log_label, W - 12);
     lv_obj_align(ui.log_label, LV_ALIGN_TOP_LEFT, 6, 14);
 
+    ui.screen = SCR_HOME;
+    ui.before_call = SCR_HOME;
     lv_obj_add_flag(ui.nav, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.music, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.settings, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.call, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.diag, LV_OBJ_FLAG_HIDDEN);
     apply_theme();
 }
 
@@ -453,14 +668,11 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
 }
 
 /* Home screen: the clock, and whatever the phone is playing. */
-static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
+/* Discovering the phone's services takes a few seconds every time it
+ * reconnects, and that gap is normal. Only call the link broken once it has
+ * stayed that way, or the log flashes up during ordinary reconnects. */
+static bool link_broken(const nav_state_t *s)
 {
-    lv_label_set_text(ui.idle_clock, minute < 0 ? "BikeNav" : hhmm);
-
-    bool music = s->music_valid;
-    /* Discovering the phone's services takes a few seconds every time it
-     * reconnects, and that gap is normal. Only call the link broken once it has
-     * stayed that way, or the log flashes up during ordinary reconnects. */
     static uint32_t unhealthy_since;
     if (s->connected && !s->apple_media) {
         if (unhealthy_since == 0) {
@@ -469,12 +681,26 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     } else {
         unhealthy_since = 0;
     }
-    bool broken = unhealthy_since != 0 && ui.now_ms - unhealthy_since > DIAG_AFTER_MS;
-    set_hidden(ui.diag, !broken);
-    set_hidden(ui.card_nav, broken);
-    set_hidden(ui.card_media, broken);
+    return unhealthy_since != 0 && ui.now_ms - unhealthy_since > DIAG_AFTER_MS;
+}
 
-    /* Route card: the turn if there is one, otherwise the time. */
+static void draw_brightness(lv_obj_t *target)
+{
+    uint8_t percent = prefs_brightness();
+    if (percent == BRIGHTNESS_AUTO) {
+        lv_label_set_text(target, "Auto");
+    } else {
+        lv_label_set_text_fmt(target, "%u%%", (unsigned)percent);
+    }
+}
+
+static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
+{
+    lv_label_set_text(ui.idle_clock, minute < 0 ? "--:--" : hhmm);
+
+    bool music = s->music_valid;
+
+    /* Route tile: the turn if there is one, otherwise it says so. */
     bool has_route = s->mode != NAV_MODE_IDLE;
     const lv_img_dsc_t *home_img = has_route ? arrow_for_direction(s->direction, false) : NULL;
     set_hidden(ui.home_arrow, home_img == NULL);
@@ -483,7 +709,7 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     }
     set_hidden(ui.home_dist, !has_route);
     set_hidden(ui.home_street, !has_route);
-    set_hidden(ui.idle_clock, has_route);
+    set_hidden(ui.home_none, has_route);
     if (has_route) {
         char num[16];
         const char *unit = "";
@@ -498,30 +724,49 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
 
     set_hidden(ui.track, !music);
     set_hidden(ui.artist, !music);
-    set_hidden(ui.transport, !music);
     set_hidden(ui.idle_msg, music);
 
     if (music) {
         lv_label_set_text(ui.track, s->music_title[0] ? s->music_title : "-");
         lv_label_set_text(ui.artist, s->music_artist);
         lv_obj_set_style_text_color(ui.track, s->music_playing ? COL_TEXT : COL_DIM, 0);
-        lv_label_set_text_fmt(ui.transport, "%s      %s      %s", LV_SYMBOL_PREV,
-                              s->music_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY, LV_SYMBOL_NEXT);
     } else if (!s->connected) {
-        lv_label_set_text_fmt(ui.idle_msg, "Waiting for phone...\nBluetooth name: %s", ui.device_name);
+        /* The name is what the rider has to look for in the phone's Bluetooth
+         * list, and this is the only screen shown before there is a phone. */
+        lv_label_set_text_fmt(ui.idle_msg, "No phone\n%s", ui.device_name);
     } else if (!s->apple_paired) {
-        lv_label_set_text(ui.idle_msg, "Connected, not paired.\niPhone Settings > Bluetooth > BikeNav");
+        lv_label_set_text(ui.idle_msg, "Not paired");
     } else if (!s->apple_media) {
-        lv_label_set_text(ui.idle_msg, "Paired, but the phone is not\nsharing its media info.");
+        lv_label_set_text(ui.idle_msg, "No media");
     } else {
-        lv_label_set_text(ui.idle_msg, "Ready. Play something,\nor start a route.");
+        lv_label_set_text(ui.idle_msg, "Nothing playing");
     }
 
-    /* The board has no serial console, so when the link is down the screen
-     * becomes one: the log plus the two state lines, and nothing else. */
-    if (!broken) {
-        return;
-    }
+    draw_brightness(ui.tile_set_val);
+}
+
+static void draw_music(const nav_state_t *s)
+{
+    bool music = s->music_valid && s->music_title[0] != '\0';
+    lv_label_set_text(ui.m_title, music ? s->music_title : "Nothing playing");
+    lv_label_set_text(ui.m_artist, s->music_valid ? s->music_artist : "");
+    lv_label_set_text(button_label(ui.m_play),
+                      s->music_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+}
+
+static void draw_call(const nav_state_t *s)
+{
+    lv_label_set_text(ui.call_who, s->call_name[0] ? s->call_name : "Unknown caller");
+    /* The phone says which actions the notification allows. Showing a button
+     * the phone would refuse is worse than showing none. */
+    set_hidden(ui.call_answer, !s->call_can_answer);
+    set_hidden(ui.call_decline, !s->call_can_decline);
+}
+
+/* The board has no serial console, so when the link is down the screen becomes
+ * one: the log plus the two state lines, and nothing else. */
+static void draw_diag(const nav_state_t *s)
+{
     char lines[LOGBUF_LINES][LOGBUF_WIDTH + 1];
     int n = logbuf_snapshot(lines);
     char text[LOGBUF_LINES * (LOGBUF_WIDTH + 2)];
@@ -546,25 +791,120 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
                           s->apple_clock ? "+clock" : "");
 }
 
-int ui_media_zone(lv_coord_t x, lv_coord_t y)
+/* Auto, then the fixed levels, then back to Auto. Automatic is a real choice
+ * rather than the absence of one: it is what a rider who never opens this
+ * screen wants, so the cycle returns to it instead of trapping them at 20%. */
+static void step_brightness(int direction)
 {
-    if (lv_obj_has_flag(ui.transport, LV_OBJ_FLAG_HIDDEN) ||
-        lv_obj_has_flag(ui.card_media, LV_OBJ_FLAG_HIDDEN)) {
-        return -1;
+    int now = prefs_brightness();
+    int next;
+    if (now == BRIGHTNESS_AUTO) {
+        next = direction > 0 ? BL_LOWEST : 100;
+    } else {
+        next = now + direction * BL_STEP;
+        if (next > 100 || next < BL_LOWEST) {
+            next = BRIGHTNESS_AUTO;
+        }
     }
-    /* Target the row where the controls really are, padded generously: this is
-     * aimed at with a thumb, on a bike, without looking. */
-    lv_area_t a;
-    lv_obj_get_coords(ui.transport, &a);
-    if (y < a.y1 - 22 || y > a.y2 + 22) {
-        return -1;
+    prefs_set_brightness((uint8_t)next);
+    /* At once: a brightness control that waits for the next redraw feels broken. */
+    ui.drawn_backlight = 0;
+    apply_backlight(ui.drawn_light);
+}
+
+/* Force the next ui_update to redraw, after a tap has changed what is showing. */
+static void invalidate(void)
+{
+    ui.drawn_version = UINT32_MAX;
+}
+
+ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
+{
+    ui_action_t act = { UI_ACT_NONE, 0 };
+
+    /* A ringing phone owns the screen: answering or declining are the only two
+     * things a tap can mean, and neither should need aiming for. */
+    if (!lv_obj_has_flag(ui.call, LV_OBJ_FLAG_HIDDEN)) {
+        if (hit(ui.call_answer, x, y)) {
+            act.kind = UI_ACT_CALL_ANSWER;
+        } else if (hit(ui.call_decline, x, y)) {
+            act.kind = UI_ACT_CALL_DECLINE;
+        }
+        return act;
     }
-    lv_coord_t W = lv_disp_get_hor_res(NULL);
-    return x < W / 3 ? 0 : (x < 2 * W / 3 ? 1 : 2);
+    /* Diagnostics are a read-out, not a control surface. */
+    if (!lv_obj_has_flag(ui.diag, LV_OBJ_FLAG_HIDDEN)) {
+        return act;
+    }
+
+    /* The top bar is the way back, from anywhere. One target, always in the
+     * same place, which is what matters when it is found without looking. */
+    if (y < 26) {
+        if (ui.screen != SCR_HOME) {
+            ui.screen = SCR_HOME;
+            invalidate();
+        }
+        return act;
+    }
+
+    switch (ui.screen) {
+        case SCR_HOME:
+            if (hit(ui.tile_nav, x, y)) {
+                ui.screen = SCR_NAV;
+            } else if (hit(ui.tile_media, x, y)) {
+                ui.screen = SCR_MUSIC;
+            } else if (hit(ui.tile_set, x, y)) {
+                ui.screen = SCR_SETTINGS;
+            } else {
+                break; /* the clock tile is not a button */
+            }
+            invalidate();
+            break;
+
+        case SCR_MUSIC:
+            act.kind = UI_ACT_MEDIA;
+            if (hit(ui.m_prev, x, y)) {
+                act.arg = MEDIA_CMD_PREVIOUS;
+            } else if (hit(ui.m_play, x, y)) {
+                act.arg = MEDIA_CMD_TOGGLE;
+            } else if (hit(ui.m_next, x, y)) {
+                act.arg = MEDIA_CMD_NEXT;
+            } else if (hit(ui.m_vol_down, x, y)) {
+                act.arg = MEDIA_CMD_VOLUME_DOWN;
+            } else if (hit(ui.m_vol_up, x, y)) {
+                act.arg = MEDIA_CMD_VOLUME_UP;
+            } else {
+                act.kind = UI_ACT_NONE;
+            }
+            break;
+
+        case SCR_SETTINGS:
+            if (hit(ui.s_bl_down, x, y)) {
+                step_brightness(-1);
+                invalidate();
+            } else if (hit(ui.s_bl_up, x, y)) {
+                step_brightness(1);
+                invalidate();
+            } else if (hit(ui.s_vol_down, x, y)) {
+                act.kind = UI_ACT_MEDIA;
+                act.arg = MEDIA_CMD_VOLUME_DOWN;
+            } else if (hit(ui.s_vol_up, x, y)) {
+                act.kind = UI_ACT_MEDIA;
+                act.arg = MEDIA_CMD_VOLUME_UP;
+            }
+            break;
+
+        case SCR_NAV:
+        default:
+            break;
+    }
+    return act;
 }
 
 void ui_update(const nav_state_t *s, uint32_t now_ms)
 {
+    ui.now_ms = now_ms; /* link_broken() times from this */
+
     /* Repeats of the same instruction keep the link alive but do not count as
      * progress, so a finished route eventually gives way to the home screen. */
     uint32_t unchanged_ms = now_ms - s->last_change_ms;
@@ -572,6 +912,8 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
     bool navigating = s->mode != NAV_MODE_IDLE && unchanged_ms < give_up_ms;
     bool stale = navigating && (now_ms - s->last_packet_ms > STALE_MS);
     int minute = local_minute_of_day(s, now_ms, 0);
+    bool ringing = s->call_ringing;
+    bool broken = link_broken(s);
 
     /* Light face by day, dark by night; dark until the phone shares its clock. */
     bool light = minute >= LIGHT_FROM_MIN && minute < LIGHT_TO_MIN;
@@ -580,38 +922,80 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
         set_palette(light);
         apply_theme();
     }
+    apply_backlight(light);
 
     unsigned log_version = logbuf_version();
     if (s->version == ui.drawn_version && stale == ui.drawn_stale && minute == ui.drawn_minute &&
-        navigating == ui.drawn_navigating && log_version == ui.drawn_log) {
+        navigating == ui.drawn_navigating && log_version == ui.drawn_log &&
+        ringing == ui.drawn_ringing) {
         return;
     }
+    bool was_navigating = ui.drawn_navigating;
     ui.drawn_log = log_version;
     ui.drawn_version = s->version;
     ui.drawn_stale = stale;
     ui.drawn_minute = minute;
     ui.drawn_navigating = navigating;
 
-    ui.now_ms = now_ms;
+    /* A ringing phone borrows the screen and gives back whatever was there.
+     * Handed back first, so that if the route ended while they were talking,
+     * the check below still catches it - otherwise the call would restore a
+     * turn-by-turn screen that has nothing left to show. */
+    if (ringing && !ui.drawn_ringing) {
+        ui.before_call = ui.screen;
+    } else if (!ringing && ui.drawn_ringing) {
+        ui.screen = ui.before_call;
+    }
+    ui.drawn_ringing = ringing;
+
+    /* A route starting takes the rider to the turn-by-turn screen, and a route
+     * ending hands it back. Only on the change: otherwise a deliberate tap back
+     * to the tiles would be undone a tenth of a second later. */
+    if (navigating && !was_navigating && ui.screen == SCR_HOME) {
+        ui.screen = SCR_NAV;
+    } else if (!navigating && ui.screen == SCR_NAV) {
+        ui.screen = SCR_HOME;
+    }
+
+    /* A call outranks a broken link, which outranks whatever was chosen. */
+    bool show_call = ringing;
+    bool show_diag = !ringing && broken;
+    bool normal = !show_call && !show_diag;
+    set_hidden(ui.call, !show_call);
+    set_hidden(ui.diag, !show_diag);
+    set_hidden(ui.nav, !(normal && ui.screen == SCR_NAV));
+    set_hidden(ui.idle, !(normal && ui.screen == SCR_HOME));
+    set_hidden(ui.music, !(normal && ui.screen == SCR_MUSIC));
+    set_hidden(ui.settings, !(normal && ui.screen == SCR_SETTINGS));
 
     char hhmm[8];
     fmt_hhmm(minute, hhmm, sizeof(hhmm));
     lv_label_set_text(ui.clock, hhmm);
 
     /* Status: the most important problem wins. */
+    const char *status_text;
+    lv_color_t status_col;
     if (!s->connected) {
-        lv_label_set_text(ui.status, LV_SYMBOL_BLUETOOTH " off");
-        lv_obj_set_style_text_color(ui.status, COL_RED, 0);
+        status_text = LV_SYMBOL_BLUETOOTH " off";
+        status_col = COL_RED;
     } else if (stale) {
-        lv_label_set_text(ui.status, LV_SYMBOL_WARNING " no data");
-        lv_obj_set_style_text_color(ui.status, COL_AMBER, 0);
+        status_text = LV_SYMBOL_WARNING " no data";
+        status_col = COL_AMBER;
     } else if (s->flags & NAV_FLAG_GPS_WEAK) {
-        lv_label_set_text(ui.status, LV_SYMBOL_GPS " weak");
-        lv_obj_set_style_text_color(ui.status, COL_AMBER, 0);
+        status_text = LV_SYMBOL_GPS " weak";
+        status_col = COL_AMBER;
     } else {
-        lv_label_set_text(ui.status, LV_SYMBOL_BLUETOOTH);
-        lv_obj_set_style_text_color(ui.status, COL_GREEN, 0);
+        status_text = LV_SYMBOL_BLUETOOTH;
+        status_col = COL_GREEN;
     }
+    /* Off the home screen the top bar is also the way back, and nothing else
+     * on the screen would say so. */
+    if (normal && ui.screen != SCR_HOME) {
+        lv_label_set_text_fmt(ui.status, "%s %s", LV_SYMBOL_LEFT, status_text);
+    } else {
+        lv_label_set_text(ui.status, status_text);
+    }
+    lv_obj_set_style_text_color(ui.status, status_col, 0);
 
     if (navigating && s->speed_kmh != NAV_UNKNOWN_U8) {
         lv_label_set_text_fmt(ui.speed, "%u km/h", s->speed_kmh);
@@ -619,12 +1003,27 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
         lv_label_set_text(ui.speed, "");
     }
 
-    set_hidden(ui.nav, !navigating);
-    set_hidden(ui.idle, navigating);
-
-    if (navigating) {
-        draw_nav(s, now_ms, stale);
-    } else {
-        draw_home(s, minute, hhmm);
+    if (show_call) {
+        draw_call(s);
+        return;
+    }
+    if (show_diag) {
+        draw_diag(s);
+        return;
+    }
+    switch (ui.screen) {
+        case SCR_NAV:
+            draw_nav(s, now_ms, stale);
+            break;
+        case SCR_MUSIC:
+            draw_music(s);
+            break;
+        case SCR_SETTINGS:
+            draw_brightness(ui.s_bl_val);
+            break;
+        case SCR_HOME:
+        default:
+            draw_home(s, minute, hhmm);
+            break;
     }
 }

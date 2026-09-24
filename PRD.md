@@ -125,6 +125,39 @@ bonded accessory. No app, no MFi chip, no entitlements.
 | T1 | Tap targets are generous — aimed at with a thumb, without looking |
 | T2 | A tap registers regardless of how long the finger rests on the glass |
 | T3 | No touch interaction can drop the Bluetooth connection |
+| T4 | One way back, always in the same place: the top bar, from any screen |
+| T5 | Nothing a tap can do is destructive, so a mis-tap costs a tap to undo |
+
+**Screens.** Home is four tiles — route, music, clock, settings. Tapping route
+or music opens it full screen; tapping the clock does nothing, because it is a
+read-out, and a tile that sometimes responds is worse than one that never does.
+Two things take the screen on their own account and hand it back afterwards: a
+ringing phone, and a link broken long enough to need diagnosing. A route
+starting also opens the turn-by-turn screen, but only on the change — otherwise
+a deliberate tap back to the tiles would be undone a tenth of a second later.
+
+Hit testing reads each control's own coordinates rather than hard-coded
+rectangles, so the layout and the touch map cannot drift apart.
+
+### 4.6 Calls and volume
+
+| ID | Requirement |
+|---|---|
+| C1 | An incoming call shows the caller and takes the whole screen |
+| C2 | Answer and decline are two large targets; nothing else is reachable |
+| C3 | Only the actions the phone says it will accept are offered |
+| C4 | Volume is adjustable from the board, so the phone stays in the pocket |
+
+Calls come from ANCS, the same notification service the phone offers any
+accessory — no app, like everything else here. The caller's name has to be
+asked for separately, and arrives split across several packets when it is long,
+so it is reassembled rather than assumed to fit in one.
+
+ANCS lives *inside* the existing step machine rather than beside it: this stack
+refuses a second GATT request while one is still finishing, so a parallel
+client would collide with the first. It is also last in the sequence on
+purpose — if the phone will not offer notifications, music and the clock still
+finish.
 
 > **T2 and T3 were both bugs.** T2: listening for `LV_EVENT_SHORT_CLICKED` silently
 > discards any press longer than 400 ms, which is most deliberate presses. T3: the
@@ -193,6 +226,8 @@ value 67 (descriptors 68, 69), Entity Update value 71 (descriptors 72, **73**).
 - Turn-by-turn display, verified against Sygic and the PC test tool
 - Widget layout with day/night palettes
 - Rotation flip, persisted
+- Tile home screen, full-screen music and settings, brightness and volume — built, unflashed
+- Incoming calls with caller ID and answer/decline over ANCS — built, unflashed
 
 **Open**
 

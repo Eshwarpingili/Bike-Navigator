@@ -1,13 +1,15 @@
 #ifndef APPLE_LINK_H
 #define APPLE_LINK_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct bt_conn;
 
-/* Talks to two services the iPhone itself provides to any paired BLE accessory:
- * Apple Media Service (what is playing) and Current Time Service (the clock).
- * No app on the phone is involved. Both need a bonded, encrypted link. */
+/* Talks to three services the iPhone itself provides to any paired BLE
+ * accessory: Apple Media Service (what is playing), Current Time Service (the
+ * clock) and the Apple Notification Center Service (who is calling). No app on
+ * the phone is involved. All three need a bonded, encrypted link. */
 
 /* AMS RemoteCommandID values. */
 enum {
@@ -16,6 +18,9 @@ enum {
     MEDIA_CMD_TOGGLE = 2,
     MEDIA_CMD_NEXT = 3,
     MEDIA_CMD_PREVIOUS = 4,
+    /* The phone's own volume, so the rider never has to dig it out of a pocket. */
+    MEDIA_CMD_VOLUME_UP = 5,
+    MEDIA_CMD_VOLUME_DOWN = 6,
 };
 
 void apple_link_on_connect(struct bt_conn *conn);
@@ -27,5 +32,8 @@ void apple_link_on_disconnect(void);
 
 /* Send a play/pause/next command to the phone. Ignored if not connected. */
 void apple_link_media_command(uint8_t command);
+
+/* Answer or decline the call that is ringing. Ignored if none is. */
+void apple_link_call_action(bool accept);
 
 #endif

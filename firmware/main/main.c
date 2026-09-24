@@ -24,12 +24,12 @@
 #include "ble_nav.h"
 #include "health.h"
 #include "nav_state.h"
+#include "prefs.h"
 #include "ui.h"
 
 #define LVGL_STACK_WORDS 2048
 #define BLE_STACK_WORDS  1024
 #define FLIP_HOLD_MS     2000
-#define ROTATION_KEY     "bikenav_rot"
 
 static void lv_log_cb(const char *buf)
 {
@@ -39,16 +39,7 @@ static void lv_log_cb(const char *buf)
 /* Landscape either way up: 90 or 270 degrees, remembered across power cycles. */
 static lv_disp_rot_t load_rotation(void)
 {
-    uint8_t rot = 0;
-    size_t saved = 0;
-    ef_get_env_blob(ROTATION_KEY, &rot, sizeof(rot), &saved);
-    return (saved == sizeof(rot) && rot == LV_DISP_ROT_270) ? LV_DISP_ROT_270 : LV_DISP_ROT_90;
-}
-
-static void save_rotation(lv_disp_rot_t rot)
-{
-    uint8_t v = (uint8_t)rot;
-    ef_set_env_blob(ROTATION_KEY, &v, sizeof(v));
+    return prefs_rotation() == LV_DISP_ROT_270 ? LV_DISP_ROT_270 : LV_DISP_ROT_90;
 }
 
 /* Tap the controls for previous / play-pause / next.
@@ -67,12 +58,22 @@ static void on_screen_touch(lv_event_t *e)
     if (code == LV_EVENT_CLICKED && !flipped) {
         lv_point_t p;
         lv_indev_get_point(lv_indev_get_act(), &p);
-        int zone = ui_media_zone(p.x, p.y);
-        switch (zone) {
-            case 0: apple_link_media_command(MEDIA_CMD_PREVIOUS); break;
-            case 1: apple_link_media_command(MEDIA_CMD_TOGGLE); break;
-            case 2: apple_link_media_command(MEDIA_CMD_NEXT); break;
-            default: break;
+        /* The UI decides what the tap meant, because it is the only thing that
+         * knows where the controls are, and hands back whatever has to reach
+         * the phone. */
+        ui_action_t act = ui_tap(p.x, p.y);
+        switch (act.kind) {
+            case UI_ACT_MEDIA:
+                apple_link_media_command(act.arg);
+                break;
+            case UI_ACT_CALL_ANSWER:
+                apple_link_call_action(true);
+                break;
+            case UI_ACT_CALL_DECLINE:
+                apple_link_call_action(false);
+                break;
+            default:
+                break;
         }
         return;
     }
@@ -91,7 +92,7 @@ static void on_screen_touch(lv_event_t *e)
         flipped = true;
         lv_disp_rot_t rot = lv_disp_get_rotation(NULL) == LV_DISP_ROT_90 ? LV_DISP_ROT_270 : LV_DISP_ROT_90;
         lv_disp_set_rotation(NULL, rot);
-        save_rotation(rot);
+        prefs_set_rotation((uint8_t)rot);
         printf("[ui] rotation -> %d\r\n", (int)rot);
     }
 }
@@ -138,6 +139,7 @@ int main(void)
         printf("RF init failed\r\n");
     }
 
+    prefs_init();
     nav_state_init();
     health_init();
 

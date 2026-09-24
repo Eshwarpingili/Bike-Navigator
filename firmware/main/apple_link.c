@@ -16,6 +16,24 @@
 #define UUID_AMS        BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x89D3502B, 0x0F36, 0x433A, 0x8EF4, 0xC502AD55F8DC))
 #define UUID_AMS_REMOTE BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x9B3C81D8, 0x57B1, 0x4A8A, 0xB8DF, 0x0E56F7CA51C2))
 #define UUID_AMS_ENTITY BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x2F7CABCE, 0x808D, 0x411F, 0x9A0C, 0xBB92BA96C102))
+/* Apple Notification Center Service: everything the phone is showing, of which
+ * only incoming calls are wanted here. */
+#define UUID_ANCS       BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x7905F431, 0xB5CE, 0x4E99, 0xA40F, 0x4B1E122D00D0))
+#define UUID_ANCS_NOTIF BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x9FBF120D, 0x6301, 0x42D9, 0x8C58, 0x25E699A21DBD))
+#define UUID_ANCS_CTRL  BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x69D1D8F3, 0x45E1, 0x49A8, 0x9821, 0x9BBDFDAAD9D9))
+#define UUID_ANCS_DATA  BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x22EAC6E9, 0x24D6, 0x4BB5, 0xBE44, 0xB36ACE7C7BFB))
+
+#define ANCS_EVENT_ADDED     0
+#define ANCS_EVENT_REMOVED   2
+#define ANCS_CATEGORY_CALL   1
+#define ANCS_FLAG_POSITIVE   0x08 /* the notification can be accepted */
+#define ANCS_FLAG_NEGATIVE   0x10 /* ...and/or refused */
+#define ANCS_CMD_GET_ATTRS   0
+#define ANCS_CMD_ACTION      2
+#define ANCS_ATTR_TITLE      1    /* for a call, the caller */
+#define ANCS_ACTION_POSITIVE 0
+#define ANCS_ACTION_NEGATIVE 1
+
 /* Current Time Service */
 #define UUID_CTS          BT_UUID_DECLARE_16(0x1805)
 #define UUID_CURRENT_TIME BT_UUID_DECLARE_16(0x2A2B)
@@ -45,6 +63,9 @@ enum step {
     STEP_CCC_REMOTE,
     STEP_CCC_ENTITY,
     STEP_CTS_CHARS,
+    STEP_ANCS_CHARS,
+    STEP_CCC_NOTIF,  /* ANCS Notification Source */
+    STEP_CCC_DATA,   /* ANCS Data Source */
     STEP_SUBSCRIBE,
     STEP_WRITE_PLAYER,  /* ask for play/pause state */
     STEP_CLEAR_TRACK,   /* drop the track registration, so re-adding it resends */
@@ -56,6 +77,8 @@ static struct bt_conn *g_conn;
 static struct bt_gatt_discover_params g_discover;
 static struct bt_gatt_subscribe_params g_sub_media;
 static struct bt_gatt_subscribe_params g_sub_time;
+static struct bt_gatt_subscribe_params g_sub_notif;
+static struct bt_gatt_subscribe_params g_sub_data;
 static struct bt_gatt_read_params g_read;
 static struct bt_gatt_write_params g_write;
 
@@ -65,9 +88,24 @@ static uint32_t g_last_step_ms;
 static uint8_t g_rounds;
 
 static uint16_t g_ams_start, g_ams_end, g_cts_start, g_cts_end;
+static uint16_t g_ancs_start, g_ancs_end;
 static uint16_t g_entity_handle, g_remote_handle, g_time_handle;
-static uint16_t g_entity_ccc, g_time_ccc;
+static uint16_t g_notif_handle, g_ctrl_handle, g_data_handle;
+static uint16_t g_entity_ccc, g_time_ccc, g_notif_ccc, g_data_ccc;
 static uint8_t g_entity_props, g_remote_props, g_time_props;
+static uint8_t g_notif_props, g_ctrl_props, g_data_props;
+
+/* The call currently ringing, if any. */
+static uint32_t g_call_uid;
+static bool g_call_active;
+static bool g_call_answerable, g_call_declinable;
+static bool g_want_title;      /* ask the phone who is calling, from the tick */
+static uint8_t g_pending_action; /* 1 = answer, 2 = decline, 0 = nothing */
+/* The caller's name can arrive split across several notifications, so it is
+ * reassembled here rather than assumed to fit in one. */
+static char g_title[NAV_CALLER_MAX + 1];
+static uint8_t g_title_len;
+static uint16_t g_title_left;
 static bool g_subscribed;
 static uint8_t g_services_seen;
 static bool g_paired;
@@ -171,15 +209,132 @@ static uint8_t on_probe_read(struct bt_conn *conn, uint8_t err, struct bt_gatt_r
     return BT_GATT_ITER_STOP;
 }
 
+/* ---------------- incoming calls ---------------- */
+
+static void publish_call(void)
+{
+    if (!g_call_active) {
+        nav_state_clear_call();
+        return;
+    }
+    nav_state_set_call(g_call_uid, g_title_len ? g_title : NULL, g_title_len,
+                       g_call_answerable, g_call_declinable);
+}
+
+/* The phone announces every notification it shows. Only calls are wanted, and
+ * only the fact of them: the caller's name has to be asked for separately. */
+static uint8_t on_notif_source(struct bt_conn *conn, struct bt_gatt_subscribe_params *params,
+                               const void *data, uint16_t length)
+{
+    (void)conn;
+    if (data == NULL) {
+        params->value_handle = 0;
+        return BT_GATT_ITER_STOP;
+    }
+    if (length < 8) {
+        return BT_GATT_ITER_CONTINUE;
+    }
+    const uint8_t *d = data;
+    uint8_t event = d[0];
+    uint8_t flags = d[1];
+    uint8_t category = d[2];
+    uint32_t uid = (uint32_t)d[4] | ((uint32_t)d[5] << 8) |
+                   ((uint32_t)d[6] << 16) | ((uint32_t)d[7] << 24);
+
+    if (category != ANCS_CATEGORY_CALL) {
+        return BT_GATT_ITER_CONTINUE;
+    }
+    if (event == ANCS_EVENT_REMOVED) {
+        /* Answered on the phone, rung off, or missed - either way it is over. */
+        if (g_call_active && uid == g_call_uid) {
+            g_call_active = false;
+            publish_call();
+        }
+        return BT_GATT_ITER_CONTINUE;
+    }
+    if (event != ANCS_EVENT_ADDED) {
+        return BT_GATT_ITER_CONTINUE; /* a modify tells us nothing new */
+    }
+
+    g_call_active = true;
+    g_call_uid = uid;
+    g_call_answerable = (flags & ANCS_FLAG_POSITIVE) != 0;
+    g_call_declinable = (flags & ANCS_FLAG_NEGATIVE) != 0;
+    g_title_len = 0;
+    g_title_left = 0;
+    g_title[0] = '\0';
+    publish_call();
+    /* Asked for from the tick, never from in here: this stack will not take a
+     * second request while one is still finishing. */
+    g_want_title = true;
+    logbuf_add("call uid=%lu f=%02x", (unsigned long)uid, flags);
+    return BT_GATT_ITER_CONTINUE;
+}
+
+/* The answer to "who is calling". Long names arrive split across several
+ * notifications, with only the first carrying a header. */
+static uint8_t on_data_source(struct bt_conn *conn, struct bt_gatt_subscribe_params *params,
+                              const void *data, uint16_t length)
+{
+    (void)conn;
+    if (data == NULL) {
+        params->value_handle = 0;
+        return BT_GATT_ITER_STOP;
+    }
+    const uint8_t *d = data;
+    uint16_t offset = 0;
+
+    if (g_title_left == 0) {
+        if (length < 8 || d[0] != ANCS_CMD_GET_ATTRS || d[5] != ANCS_ATTR_TITLE) {
+            return BT_GATT_ITER_CONTINUE;
+        }
+        /* A late answer to a request about an earlier call would otherwise put
+         * the wrong name on the screen while a different one is ringing. */
+        uint32_t uid = (uint32_t)d[1] | ((uint32_t)d[2] << 8) |
+                       ((uint32_t)d[3] << 16) | ((uint32_t)d[4] << 24);
+        if (!g_call_active || uid != g_call_uid) {
+            return BT_GATT_ITER_CONTINUE;
+        }
+        g_title_left = (uint16_t)d[6] | ((uint16_t)d[7] << 8);
+        g_title_len = 0;
+        offset = 8;
+    }
+
+    uint16_t avail = length > offset ? length - offset : 0;
+    if (avail > g_title_left) {
+        avail = g_title_left;
+    }
+    for (uint16_t i = 0; i < avail && g_title_len < NAV_CALLER_MAX; i++) {
+        g_title[g_title_len++] = (char)d[offset + i];
+    }
+    g_title[g_title_len] = '\0';
+    g_title_left -= avail;
+
+    if (g_title_left == 0 && g_call_active) {
+        publish_call();
+    }
+    return BT_GATT_ITER_CONTINUE;
+}
+
+/* Where discovery goes once the clock has been dealt with. Notifications come
+ * last on purpose: they are the newest thing here, and if the phone will not
+ * offer them, music and clock should still finish. */
+static enum step step_after_cts(void)
+{
+    return g_ancs_start ? STEP_ANCS_CHARS : STEP_SUBSCRIBE;
+}
+
 static uint8_t on_service(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           struct bt_gatt_discover_params *params)
 {
     (void)conn;
     (void)params;
     if (attr == NULL) {
-        logbuf_add("svc=%u ams=%u-%u cts=%u", g_services_seen, g_ams_start, g_ams_end, g_cts_start);
+        logbuf_add("svc=%u ams=%u-%u cts=%u ancs=%u", g_services_seen, g_ams_start, g_ams_end,
+                   g_cts_start, g_ancs_start);
         publish_status();
-        next_step(g_ams_start ? STEP_AMS_CHARS : (g_cts_start ? STEP_CTS_CHARS : STEP_DONE));
+        next_step(g_ams_start ? STEP_AMS_CHARS
+                              : (g_cts_start ? STEP_CTS_CHARS : step_after_cts()));
         return BT_GATT_ITER_STOP;
     }
     const struct bt_gatt_service_val *service = attr->user_data;
@@ -190,6 +345,9 @@ static uint8_t on_service(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     } else if (!bt_uuid_cmp(service->uuid, UUID_CTS)) {
         g_cts_start = attr->handle + 1;
         g_cts_end = service->end_handle;
+    } else if (!bt_uuid_cmp(service->uuid, UUID_ANCS)) {
+        g_ancs_start = attr->handle + 1;
+        g_ancs_end = service->end_handle;
     }
     return BT_GATT_ITER_CONTINUE;
 }
@@ -202,7 +360,8 @@ static uint8_t on_ams_char(struct bt_conn *conn, const struct bt_gatt_attr *attr
     if (attr == NULL) {
         logbuf_add("ent=%u/%02x rem=%u/%02x", g_entity_handle, g_entity_props,
                    g_remote_handle, g_remote_props);
-        next_step(g_entity_handle ? STEP_CCC_REMOTE : (g_cts_start ? STEP_CTS_CHARS : STEP_DONE));
+        next_step(g_entity_handle ? STEP_CCC_REMOTE
+                                  : (g_cts_start ? STEP_CTS_CHARS : step_after_cts()));
         return BT_GATT_ITER_STOP;
     }
     const struct bt_gatt_chrc *chrc = attr->user_data;
@@ -222,7 +381,7 @@ static uint8_t on_cts_char(struct bt_conn *conn, const struct bt_gatt_attr *attr
     (void)conn;
     (void)params;
     if (attr == NULL) {
-        next_step(STEP_SUBSCRIBE);
+        next_step(step_after_cts());
         return BT_GATT_ITER_STOP;
     }
     const struct bt_gatt_chrc *chrc = attr->user_data;
@@ -233,12 +392,37 @@ static uint8_t on_cts_char(struct bt_conn *conn, const struct bt_gatt_attr *attr
     return BT_GATT_ITER_CONTINUE;
 }
 
+static uint8_t on_ancs_char(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                            struct bt_gatt_discover_params *params)
+{
+    (void)conn;
+    (void)params;
+    if (attr == NULL) {
+        logbuf_add("ancs ns=%u cp=%u ds=%u", g_notif_handle, g_ctrl_handle, g_data_handle);
+        next_step(g_notif_handle ? STEP_CCC_NOTIF : STEP_SUBSCRIBE);
+        return BT_GATT_ITER_STOP;
+    }
+    const struct bt_gatt_chrc *chrc = attr->user_data;
+    if (!bt_uuid_cmp(chrc->uuid, UUID_ANCS_NOTIF)) {
+        g_notif_handle = chrc->value_handle;
+        g_notif_props = chrc->properties;
+    } else if (!bt_uuid_cmp(chrc->uuid, UUID_ANCS_CTRL)) {
+        g_ctrl_handle = chrc->value_handle;
+        g_ctrl_props = chrc->properties;
+    } else if (!bt_uuid_cmp(chrc->uuid, UUID_ANCS_DATA)) {
+        g_data_handle = chrc->value_handle;
+        g_data_props = chrc->properties;
+    }
+    return BT_GATT_ITER_CONTINUE;
+}
+
 static const uint8_t g_ccc_on[] = { 0x01, 0x00 };
 
 /* Handles to try, as an offset from the characteristic's value. "Extended
  * properties" means a read-only 0x2900 descriptor comes first, so the
  * notification descriptor is one further along than the usual layout. */
 static uint8_t g_ccc_try;      /* which candidate we are on, 0..2 */
+static uint8_t g_ancs_try;     /* the same ladder, for the notification service */
 static uint16_t g_ccc_tried;   /* the handle of the attempt in flight */
 
 static uint16_t ccc_candidate(uint16_t value_handle, uint16_t found, uint8_t props, uint8_t attempt)
@@ -269,6 +453,25 @@ static void on_ccc_written(struct bt_conn *conn, uint8_t err, struct bt_gatt_wri
         next_step(STEP_CCC_ENTITY);
         return;
     }
+    /* The notification service uses the same ladder, but a failure there is not
+     * allowed to hold up music or the clock: it just means no caller ID. */
+    if (g_step == STEP_CCC_NOTIF || g_step == STEP_CCC_DATA) {
+        bool on_notif = g_step == STEP_CCC_NOTIF;
+        if (!err) {
+            if (on_notif) {
+                g_notif_ccc = g_ccc_tried;
+            } else {
+                g_data_ccc = g_ccc_tried;
+            }
+        } else if (g_ancs_try < 2) {
+            g_ancs_try++;
+            next_step(g_step); /* the descriptor is the next one along */
+            return;
+        }
+        g_ancs_try = 0;
+        next_step(on_notif ? STEP_CCC_DATA : STEP_SUBSCRIBE);
+        return;
+    }
     g_ccc_err = err; /* the one that matters is Entity Update */
     if (err && g_entity_ccc == 0 && g_ccc_try < 2) {
         g_ccc_try++;
@@ -281,7 +484,7 @@ static void on_ccc_written(struct bt_conn *conn, uint8_t err, struct bt_gatt_wri
         logbuf_add("ccc %u ON", g_entity_ccc);
     }
     publish_status();
-    next_step(g_cts_start ? STEP_CTS_CHARS : STEP_SUBSCRIBE);
+    next_step(g_cts_start ? STEP_CTS_CHARS : step_after_cts());
 }
 
 static int write_ccc(uint16_t handle)
@@ -405,15 +608,116 @@ static void do_subscribe_step(void)
     subscribe(&g_sub_remote, g_remote_handle, g_remote_ccc, g_remote_props, on_remote_update);
     subscribe(&g_sub_media, g_entity_handle, g_entity_ccc, g_entity_props, on_media_update);
     subscribe(&g_sub_time, g_time_handle, g_time_ccc, g_time_props, on_time_update);
+    /* Data Source first: the phone can answer a request the instant it is made,
+     * so be listening before anything is asked for. */
+    subscribe(&g_sub_data, g_data_handle, g_data_ccc, g_data_props, on_data_source);
+    subscribe(&g_sub_notif, g_notif_handle, g_notif_ccc, g_notif_props, on_notif_source);
     g_subscribed = g_sub_media.value_handle != 0;
     publish_status();
-    logbuf_add("subscribed media=%u clock=%u", g_entity_handle, g_time_handle);
+    logbuf_add("subscribed media=%u clock=%u calls=%u", g_entity_handle, g_time_handle,
+               g_notif_handle);
     next_step(g_entity_handle ? STEP_WRITE_PLAYER : STEP_READ_TIME);
+}
+
+/* ---------------- the notification control point ---------------- */
+
+static struct bt_gatt_write_params g_cp_write;
+static uint8_t g_cp_buf[8];
+
+static void on_cp_written(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_params *params)
+{
+    (void)conn;
+    (void)params;
+    g_busy = false;
+    if (err) {
+        /* 0xA0 here means the notification has already gone: the call was
+         * answered on the phone, or the caller rang off. */
+        logbuf_add("ancs cp err=%02x", err);
+    }
+}
+
+static int write_control_point(uint8_t len)
+{
+    memset(&g_cp_write, 0, sizeof(g_cp_write));
+    g_cp_write.func = on_cp_written; /* this stack calls it unconditionally */
+    g_cp_write.handle = g_ctrl_handle;
+    g_cp_write.data = g_cp_buf;
+    g_cp_write.length = len;
+    return bt_gatt_write(g_conn, &g_cp_write);
+}
+
+static void put_uid(uint32_t uid)
+{
+    g_cp_buf[1] = (uint8_t)(uid);
+    g_cp_buf[2] = (uint8_t)(uid >> 8);
+    g_cp_buf[3] = (uint8_t)(uid >> 16);
+    g_cp_buf[4] = (uint8_t)(uid >> 24);
+}
+
+/* Anything the control point is asked to do is queued and sent from the tick,
+ * never from inside a notification callback: this stack will not take a second
+ * request while one is still finishing. */
+static bool service_control_point(void)
+{
+    if (g_conn == NULL || g_ctrl_handle == 0 || g_busy) {
+        return false;
+    }
+    if (g_pending_action) {
+        uint8_t action = g_pending_action;
+        g_pending_action = 0;
+        if (!g_call_active) {
+            return false;
+        }
+        g_cp_buf[0] = ANCS_CMD_ACTION;
+        put_uid(g_call_uid);
+        g_cp_buf[5] = action == 1 ? ANCS_ACTION_POSITIVE : ANCS_ACTION_NEGATIVE;
+        g_busy = true;
+        if (write_control_point(6)) {
+            /* Put it back rather than dropping it: the rider pressed answer and
+             * is waiting, and the next tick is a few milliseconds away. */
+            g_pending_action = action;
+            g_busy = false;
+            return false;
+        }
+        logbuf_add("call %s", action == 1 ? "answered" : "declined");
+        return true;
+    }
+    if (g_want_title) {
+        g_want_title = false;
+        if (!g_call_active) {
+            return false;
+        }
+        g_cp_buf[0] = ANCS_CMD_GET_ATTRS;
+        put_uid(g_call_uid);
+        g_cp_buf[5] = ANCS_ATTR_TITLE;
+        g_cp_buf[6] = NAV_CALLER_MAX;
+        g_cp_buf[7] = 0;
+        g_busy = true;
+        if (write_control_point(8)) {
+            g_busy = false;
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+void apple_link_call_action(bool accept)
+{
+    if (!g_call_active) {
+        return;
+    }
+    g_pending_action = accept ? 1 : 2;
 }
 
 void apple_link_tick(uint32_t now_ms)
 {
     if (g_conn == NULL || !g_paired) {
+        return;
+    }
+    /* A call can arrive at any point in the sequence, and the answer has to go
+     * out while it is still ringing - so this is checked before anything else. */
+    if (service_control_point()) {
         return;
     }
     if (g_step == STEP_DONE) {
@@ -436,10 +740,12 @@ void apple_link_tick(uint32_t now_ms)
             g_rounds++;
             g_sec_level = (uint8_t)bt_conn_get_security(g_conn);
             g_services_seen = 0;
-            g_ams_start = g_cts_start = 0;
-            g_entity_ccc = g_remote_ccc = 0;
+            g_ams_start = g_cts_start = g_ancs_start = 0;
+            g_entity_ccc = g_remote_ccc = g_notif_ccc = g_data_ccc = 0;
             g_ccc_try = 0;
+            g_ancs_try = 0;
             g_entity_handle = g_remote_handle = 0;
+            g_notif_handle = g_ctrl_handle = g_data_handle = 0;
             /* The subscribe params stay linked in the stack's own list until the
              * peer goes away. Clearing them here unlinks the ones behind them
              * too, and then an arriving notification has nowhere to land. */
@@ -477,7 +783,7 @@ void apple_link_tick(uint32_t now_ms)
         case STEP_CCC_ENTITY:
             if (g_entity_handle == 0) {
                 g_busy = false;
-                next_step(g_cts_start ? STEP_CTS_CHARS : STEP_SUBSCRIBE);
+                next_step(g_cts_start ? STEP_CTS_CHARS : step_after_cts());
                 return;
             }
             g_ccc_tried = ccc_candidate(g_entity_handle, g_entity_ccc, g_entity_props, g_ccc_try);
@@ -485,6 +791,22 @@ void apple_link_tick(uint32_t now_ms)
             break;
         case STEP_CTS_CHARS:
             err = start_discovery(on_cts_char, BT_GATT_DISCOVER_CHARACTERISTIC, g_cts_start, g_cts_end);
+            break;
+        case STEP_ANCS_CHARS:
+            err = start_discovery(on_ancs_char, BT_GATT_DISCOVER_CHARACTERISTIC, g_ancs_start, g_ancs_end);
+            break;
+        case STEP_CCC_NOTIF:
+            g_ccc_tried = ccc_candidate(g_notif_handle, g_notif_ccc, g_notif_props, g_ancs_try);
+            err = write_ccc(g_ccc_tried);
+            break;
+        case STEP_CCC_DATA:
+            if (g_data_handle == 0) {
+                g_busy = false;
+                next_step(STEP_SUBSCRIBE);
+                return;
+            }
+            g_ccc_tried = ccc_candidate(g_data_handle, g_data_ccc, g_data_props, g_ancs_try);
+            err = write_ccc(g_ccc_tried);
             break;
         case STEP_CLEAR_TRACK:
             err = write_entity_request(g_track_clear, sizeof(g_track_clear));
@@ -536,10 +858,20 @@ void apple_link_on_connect(struct bt_conn *conn)
     g_att_err = 0xFF;
     g_services_seen = 0;
     g_ams_start = g_ams_end = g_cts_start = g_cts_end = 0;
+    g_ancs_start = g_ancs_end = 0;
     g_entity_handle = g_remote_handle = g_time_handle = 0;
-    g_entity_ccc = g_time_ccc = 0;
+    g_notif_handle = g_ctrl_handle = g_data_handle = 0;
+    g_entity_ccc = g_time_ccc = g_notif_ccc = g_data_ccc = 0;
     g_entity_props = g_remote_props = g_time_props = 0;
+    g_notif_props = g_ctrl_props = g_data_props = 0;
     g_ccc_try = 0;
+    g_ancs_try = 0;
+    g_call_active = false;
+    g_want_title = false;
+    g_pending_action = 0;
+    g_title_len = 0;
+    g_title_left = 0;
+    nav_state_clear_call();
     g_subscribed = false;
     g_write_err = 0xFF;
     g_notif_count = 0;
@@ -583,12 +915,17 @@ void apple_link_on_disconnect(void)
     g_step = STEP_DONE;
     g_busy = false;
     g_entity_handle = g_remote_handle = g_time_handle = 0;
-    g_entity_ccc = g_time_ccc = 0;
+    g_notif_handle = g_ctrl_handle = g_data_handle = 0;
+    g_entity_ccc = g_time_ccc = g_notif_ccc = g_data_ccc = 0;
     g_subscribed = false;
     g_services_seen = 0;
     g_att_err = 0xFF;
+    g_call_active = false;
+    g_want_title = false;
+    g_pending_action = 0;
     publish_status();
     nav_state_clear_music();
+    nav_state_clear_call();
 }
 
 static void on_command_written(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_params *params)

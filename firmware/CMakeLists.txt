@@ -14,6 +14,7 @@ target_sources(app PRIVATE
     main/health.c
     main/backlight.c
     main/nav_state.c
+    main/prefs.c
     main/ui.c
 )
 

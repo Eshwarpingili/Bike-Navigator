@@ -25,6 +25,7 @@ enum {
 #define NAV_STREET_MAX  48
 #define NAV_TEXT_MAX    16
 #define NAV_MUSIC_MAX   40
+#define NAV_CALLER_MAX  28
 
 typedef enum {
     NAV_MODE_IDLE = 0,  /* connected or not, no route */
@@ -54,6 +55,14 @@ typedef struct {
     char music_artist[NAV_MUSIC_MAX + 1];
     bool music_valid;
     bool music_playing;
+
+    /* Incoming call, from the phone's notification service (ANCS). The uid is
+     * what an answer or a decline has to quote back to the phone. */
+    bool call_ringing;
+    char call_name[NAV_CALLER_MAX + 1];
+    uint32_t call_uid;
+    bool call_can_answer;
+    bool call_can_decline;
 
     /* How far the phone link got, shown on the home screen while diagnosing */
     bool apple_paired;
@@ -86,6 +95,11 @@ void nav_state_set_connected(bool connected, uint32_t now_ms);
 void nav_state_set_music_text(bool is_title, const char *text, uint16_t len);
 void nav_state_set_music_playing(bool playing);
 void nav_state_clear_music(void);
+
+/* A call is ringing. name may be NULL until the phone sends the caller's. */
+void nav_state_set_call(uint32_t uid, const char *name, uint16_t len,
+                        bool can_answer, bool can_decline);
+void nav_state_clear_call(void);
 
 /* Set the clock from the phone, as seconds since local midnight. */
 void nav_state_set_local_time(uint32_t seconds_of_day);
