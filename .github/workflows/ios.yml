@@ -80,8 +80,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest BikeNav.ipa \
-            --title "Latest build" \
-            --notes "Built from ${{ github.sha }}. On the iPhone, tap BikeNav.ipa below, then add it in SideStore under My Apps." \
-            --prerelease
+          set -eu
+          # Never delete before creating. Deleting first leaves a window with no
+          # release at all, and if the create then does not land - which is
+          # exactly what happened once - the download link is simply gone, with
+          # every step still reporting success. Create only when missing, then
+          # replace the asset in place.
+          NOTES="Built from ${{ github.sha }}. On the iPhone, tap BikeNav.ipa below, then add it in SideStore under My Apps."
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "Latest build" --notes "$NOTES" --prerelease
+          else
+            gh release edit latest --notes "$NOTES" --prerelease
+          fi
+          gh release upload latest BikeNav.ipa --clobber
+
+          # Prove it: a step that says success while the link is dead is worse
+          # than a step that fails.
+          gh release view latest --json assets \
+            --jq '.assets[] | select(.name == "BikeNav.ipa") | "published \(.name) \(.size) bytes"' \
+            | grep . || { echo "::error::no BikeNav.ipa on the release after upload"; exit 1; }
