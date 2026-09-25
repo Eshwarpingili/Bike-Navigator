@@ -107,8 +107,29 @@ jobs:
           echo "::notice::upload rc=$? out=$(echo "$up" | tr '\n' ' ' | cut -c1-150)"
           set -e
 
-          # Prove it: a step that says success while the link is dead is worse
-          # than a step that fails.
-          gh release view latest --json assets \
-            --jq '.assets[] | select(.name == "BikeNav.ipa") | "published \(.name) \(.size) bytes"' \
-            | grep . || { echo "::error::no BikeNav.ipa on the release after upload"; exit 1; }
+          # Publish it, every time and explicitly. A draft release is visible to
+          # the runner and to anyone signed in with access, and invisible to
+          # everyone else - so gh reports success, the asset really is attached,
+          # and the download link still 404s for the person holding the phone.
+          # That is exactly what happened: the release sat as a draft for three
+          # builds while every step went green.
+          gh release edit latest --draft=false --prerelease
+
+          # Prove it, the way the person downloading it would experience it. The
+          # old check only asked whether the asset existed, which it did - on a
+          # draft nobody could see. Draft state is the thing that has to be
+          # checked, because that is the thing that was wrong.
+          state=$(gh release view latest --json isDraft,assets \
+            --jq '"draft=\(.isDraft) ipa=\([.assets[] | select(.name == "BikeNav.ipa") | .size] | length)"')
+          echo "::notice::published state: $state"
+          case "$state" in
+            "draft=false ipa=1") ;;
+            *) echo "::error::release is not publicly downloadable ($state)"; exit 1 ;;
+          esac
+
+          # And finally as a stranger sees it: no token, no account, just the URL
+          # that goes on the phone. Everything above can pass while this 404s.
+          code=$(curl -s -o /dev/null -w "%{http_code}" -L \
+            "https://github.com/${{ github.repository }}/releases/download/latest/BikeNav.ipa")
+          echo "::notice::anonymous download: HTTP $code"
+          [ "$code" = "200" ] || { echo "::error::download link is not public (HTTP $code)"; exit 1; }
