@@ -59,6 +59,40 @@ struct RoutePath {
         cumulative = cum
     }
 
+    /// The segment containing a given distance along the route.
+    func segment(at along: Double) -> Int {
+        guard points.count >= 2 else { return 0 }
+        if along <= 0 { return 0 }
+        if along >= length { return points.count - 2 }
+        var lo = 0, hi = cumulative.count - 1
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2
+            if cumulative[mid] <= along { lo = mid } else { hi = mid }
+        }
+        return min(lo, points.count - 2)
+    }
+
+    /// Closest point within a corridor of the route, measured in metres along
+    /// it from where the rider was last known to be.
+    ///
+    /// Searching the whole route instead is what made the board skip turns. On
+    /// any route that comes back past itself - a block loop, an out and back, a
+    /// service road beside the main one - the geometrically nearest point can be
+    /// several hundred metres further on, so one wide GPS fix teleports the
+    /// rider there. Everything in between is skipped, the distance remaining
+    /// collapses, and the instruction shown is the one *after* the turn they
+    /// are actually approaching.
+    ///
+    /// The old window was counted in polyline segments rather than metres, and
+    /// real routes have fewer points than the window was wide - so the "local"
+    /// search was quietly the whole route and constrained nothing at all.
+    func project(_ p: CLLocationCoordinate2D, from along: Double,
+                 behind: Double, ahead: Double) -> Projection? {
+        let lo = segment(at: max(0, along - behind))
+        let hi = segment(at: min(length, along + ahead))
+        return project(p, from: lo, window: max(1, hi - lo))
+    }
+
     /// Closest point on segments [from, from + window].
     func project(_ p: CLLocationCoordinate2D, from: Int, window: Int) -> Projection? {
         guard points.count >= 2 else { return nil }

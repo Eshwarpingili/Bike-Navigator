@@ -23,9 +23,13 @@ final class Navigator: NSObject, ObservableObject {
     private let manager = CLLocationManager()
     private var path: RoutePath?
     private var maneuvers: [Maneuver] = []
-    private var matchedSegment = 0
+    /// Where the rider was last confidently matched on the route, and when.
+    /// The corridor the next fix is matched inside is anchored on these.
+    private var lastAlong: Double?
+    private var lastFixAt: Date?
     private var offRouteFixes = 0
     private var lastRerouteAt = Date.distantPast
+    private var rerouteStartedAt: Date?
     private var rerouting = false
     private var arrivedAt: Date?
     /// Where the rider was when the board was last sent the shape of the road.
@@ -131,9 +135,11 @@ final class Navigator: NSObject, ObservableObject {
         let built = ManeuverBuilder.build(route: route, leftHandTraffic: leftHandTraffic)
         path = built.0
         maneuvers = built.1
-        matchedSegment = 0
         offRouteFixes = 0
         rerouting = false
+        rerouteStartedAt = nil
+        lastAlong = nil
+        lastFixAt = nil
         shapeSentAlong = nil
         positionSentAt = nil
         if phase == .planning { phase = .ready }
@@ -146,11 +152,21 @@ final class Navigator: NSObject, ObservableObject {
         guard let path, !maneuvers.isEmpty else { return }
 
         let weakFix = loc.horizontalAccuracy < 0 || loc.horizontalAccuracy > 40
-        var projection = path.project(loc.coordinate, from: matchedSegment - 3, window: 150)
-        if projection == nil || projection!.offset > 60,
-           let global = path.project(loc.coordinate, from: 0, window: path.points.count),
-           global.offset < (projection?.offset ?? .infinity) {
-            projection = global
+
+        // Match inside a corridor around where the rider was last seen, sized
+        // by how far they could plausibly have travelled since. Only the very
+        // first fix on a route - or the one after a reroute - is allowed to
+        // search the whole thing, because only then is there nothing to
+        // contradict.
+        var projection: RoutePath.Projection?
+        if let anchor = lastAlong {
+            let elapsed = lastFixAt.map { max(0.5, min(loc.timestamp.timeIntervalSince($0), 30)) } ?? 5
+            let speed = max(loc.speed, 0)           // m/s, negative when unknown
+            let ahead = max(80, min(elapsed * (speed + 15), 500))
+            projection = path.project(loc.coordinate, from: anchor, behind: 40, ahead: ahead)
+        }
+        if projection == nil {
+            projection = path.project(loc.coordinate, from: 0, window: path.points.count)
         }
         guard let p = projection else { return }
 
@@ -159,9 +175,16 @@ final class Navigator: NSObject, ObservableObject {
             offRouteFixes += 1
         } else {
             offRouteFixes = 0
-            matchedSegment = p.segment
+            // Only a fix that actually landed on the road may move the anchor.
+            // Letting a poor one drag it is how the corridor walks off down the
+            // wrong street one fix at a time.
+            lastAlong = p.along
+            lastFixAt = loc.timestamp
         }
-        if offRouteFixes >= 3 { reroute(from: loc.coordinate) }
+        // Three poor fixes in a row, or a single good one nowhere near the road.
+        if offRouteFixes >= 3 || (p.offset > 150 && !weakFix) {
+            reroute(from: loc.coordinate)
+        }
 
         let remaining = max(0, path.length - p.along)
         let index = maneuvers.firstIndex { $0.along > p.along + 3 } ?? (maneuvers.count - 1)
@@ -172,7 +195,14 @@ final class Navigator: NSObject, ObservableObject {
         }
         let fraction = path.length > 0 ? remaining / path.length : 0
         let minutes = route.map { Int(($0.expectedTravelTime * fraction / 60).rounded(.up)) }
-        let arrived = remaining < 25
+        // Both conditions, because either alone lies. Distance remaining alone
+        // declares arrival the moment the matcher runs slightly ahead - which
+        // is exactly what used to happen. Proximity alone declares it whenever
+        // the route merely passes the destination on its way somewhere else.
+        // The radius follows the fix quality, so a poor one near the door does
+        // not leave the route running forever.
+        let toEnd = path.points.last.map { Geo.distance(loc.coordinate, $0) } ?? .infinity
+        let arrived = remaining < 20 && toEnd < max(40, loc.horizontalAccuracy * 1.5)
         if arrived && arrivedAt == nil { arrivedAt = Date() }
 
         let g = Guidance(direction: rerouting ? Dir.offRoute : next.direction,
@@ -225,8 +255,15 @@ final class Navigator: NSObject, ObservableObject {
     }
 
     private func reroute(from coordinate: CLLocationCoordinate2D) {
+        // A request that never comes back used to leave `rerouting` set for
+        // good, and with it every future reroute - the app would quietly stop
+        // noticing the rider had left the route at all.
+        if rerouting, let started = rerouteStartedAt, Date().timeIntervalSince(started) > 20 {
+            rerouting = false
+        }
         guard !rerouting, Date().timeIntervalSince(lastRerouteAt) > 8 else { return }
         rerouting = true
+        rerouteStartedAt = Date()
         lastRerouteAt = Date()
         offRouteFixes = 0
         calculate(from: coordinate)

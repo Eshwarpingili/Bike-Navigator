@@ -70,7 +70,12 @@ enum ManeuverBuilder {
             let from = startAlong(i)
             let to = isLast ? path.length : startAlong(i + 1)
 
-            if i > 0 && !(text.isEmpty && !isLast) {
+            // A step with no wording is still a step, and MapKit hands those
+            // out. Dropping them dropped the turn with them, so the board
+            // showed the instruction *after* the corner the rider was actually
+            // arriving at - which is worse than saying nothing. Kept now, and
+            // classified from the geometry, which is all a turn really needs.
+            if i > 0 {
                 let along = isLast ? path.length : from
 
                 // Measure the approach and the departure over a stretch that
@@ -263,7 +268,31 @@ enum ManeuverBuilder {
         if let bend = Dir.bendWords(code) {
             return bend
         }
-        return road ?? text
+        if let road { return road }
+        // No road named and, for a step MapKit worded as nothing at all, no
+        // text either. Say what the arrow says rather than leaving the line
+        // blank, which reads as a fault.
+        return text.isEmpty ? (turnWords(code) ?? "Continue") : text
+    }
+
+    /// Plain words for a turn code, for when the instruction has none.
+    static func turnWords(_ code: UInt8) -> String? {
+        switch code {
+        case Dir.slightLeft: return "Slight left"
+        case Dir.slightRight: return "Slight right"
+        case Dir.left: return "Turn left"
+        case Dir.right: return "Turn right"
+        case Dir.sharpLeft: return "Sharp left"
+        case Dir.sharpRight: return "Sharp right"
+        case Dir.keepLeft: return "Keep left"
+        case Dir.keepRight: return "Keep right"
+        case Dir.exitLeft: return "Exit left"
+        case Dir.exitRight: return "Exit right"
+        case Dir.uTurnLeft, Dir.uTurnRight: return "U-turn"
+        case Dir.straight: return "Straight on"
+        case Dir.destination: return "Destination"
+        default: return nil
+        }
     }
 
     /// Which way a roundabout exit leaves, relative to the way in. Straight

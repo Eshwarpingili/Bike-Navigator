@@ -15,7 +15,11 @@
 /* Sygic never says "route finished", so drop back to the home screen once the
  * instruction has stopped changing (3 min: long enough for a traffic light). */
 #define HOME_AFTER_MS 180000
-#define HOME_AFTER_DISCONNECT_MS 15000
+/* The route stays on screen while the phone is away. It reconnects on its own,
+ * and dropping the last instruction because the link blinked leaves the rider
+ * at a junction with a clock. Long enough to cover a tunnel, a pocket, or a
+ * reboot; short enough that a finished ride does not sit there all day. */
+#define HOME_AFTER_DISCONNECT_MS 600000
 /* How long the phone link must stay down before the log takes the screen. */
 #define DIAG_AFTER_MS 25000
 /* How much ground the map shows across the screen: far enough to see the next
@@ -869,6 +873,52 @@ static void set_hidden(lv_obj_t *o, bool hidden)
     }
 }
 
+/* Colour says how much to slow down; the shape says which way to go.
+ *
+ * Two channels, each carrying exactly one thing, so a glance answers both
+ * questions at once and neither has to be read. The ladder is fixed and it
+ * never varies by screen:
+ *
+ *     green   you have arrived
+ *     red     stop or nearly - sharp, steep, U-turn, or off the route
+ *     amber   a decision point - roundabout, ramp, flyover, underpass
+ *     blue    a nudge - slight turns, keeps, gentle bends
+ *     plain   an ordinary turn, which is most of them
+ *
+ * Plain is the common case on purpose: if everything were coloured, nothing
+ * would stand out, and the colours that matter are the ones that mean slow.
+ */
+static lv_color_t direction_colour(uint8_t dir)
+{
+    if (dir >= 23 && dir <= 38) {
+        return COL_AMBER;  /* every roundabout */
+    }
+    switch (dir) {
+        case DIR_DESTINATION:
+        case DIR_VIA:
+            return COL_GREEN;
+
+        case DIR_OFF_ROUTE:
+        case 11: case 12:   /* sharp left, sharp right */
+        case 14: case 15:   /* U-turn */
+        case 41: case 44:   /* steep bend */
+            return COL_RED;
+
+        case 21: case 22:   /* exit left, exit right */
+        case 40: case 43:   /* sharp bend */
+        case 45: case 46:   /* flyover, underpass */
+            return COL_AMBER;
+
+        case 2: case 3:     /* slight left, slight right */
+        case 6: case 7:     /* keep left, keep right */
+        case 39: case 42:   /* slight bend */
+            return COL_ACCENT;
+
+        default:
+            return COL_TEXT;
+    }
+}
+
 static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
 {
     char num[16], buf[32];
@@ -882,7 +932,11 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     set_hidden(ui.arrow, img == NULL);
     if (img) {
         lv_img_set_src(ui.arrow, img);
-        lv_obj_set_style_img_recolor(ui.arrow, rerouting ? COL_AMBER : main_col, 0);
+        /* Stale data greys everything out, because a confident colour on an
+         * instruction that may be out of date is the wrong kind of confident. */
+        lv_obj_set_style_img_recolor(ui.arrow,
+                                     stale ? COL_DIM
+                                           : (rerouting ? COL_RED : direction_colour(dir)), 0);
     }
 
     if (arrived) {
@@ -942,6 +996,9 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
 }
 
 /* Home screen: the clock, and whatever the phone is playing. */
+/* The one colour ladder, shared by every screen that draws an arrow. */
+static lv_color_t direction_colour(uint8_t dir);
+
 /* Discovering the phone's services takes a few seconds every time it
  * reconnects, and that gap is normal. Only call the link broken once it has
  * stayed that way, or the log flashes up during ordinary reconnects. */
@@ -984,6 +1041,7 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     set_hidden(ui.home_arrow, home_img == NULL);
     if (home_img) {
         lv_img_set_src(ui.home_arrow, home_img);
+        lv_obj_set_style_img_recolor(ui.home_arrow, direction_colour(s->direction), 0);
     }
     set_hidden(ui.home_dist, !has_route);
     set_hidden(ui.home_street, !has_route);
@@ -1060,6 +1118,7 @@ static void draw_map(const nav_state_t *s)
     set_hidden(ui.map_arrow, img == NULL);
     if (img) {
         lv_img_set_src(ui.map_arrow, img);
+        lv_obj_set_style_img_recolor(ui.map_arrow, direction_colour(s->direction), 0);
     }
     if (s->mode == NAV_MODE_BASIC) {
         lv_label_set_text(ui.map_dist, s->distance_text);
