@@ -80,19 +80,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -eu
+          set -u
+          # Actions logs need a signed-in account, so anything worth reading has
+          # to come out as an annotation. This step reported success while
+          # leaving no release behind at all, and no amount of staring at the
+          # YAML was going to explain that.
+          echo "::notice::auth: $(gh auth status 2>&1 | tr '\n' ' ' | cut -c1-150)"
+          echo "::notice::releases before: $(gh release list 2>&1 | head -3 | tr '\n' ' ' | cut -c1-150)"
+          set -e
+
           # Never delete before creating. Deleting first leaves a window with no
           # release at all, and if the create then does not land - which is
           # exactly what happened once - the download link is simply gone, with
           # every step still reporting success. Create only when missing, then
           # replace the asset in place.
           NOTES="Built from ${{ github.sha }}. On the iPhone, tap BikeNav.ipa below, then add it in SideStore under My Apps."
+          set +e
           if ! gh release view latest >/dev/null 2>&1; then
-            gh release create latest --title "Latest build" --notes "$NOTES" --prerelease
+            create=$(gh release create latest --title "Latest build" --notes "$NOTES" --prerelease 2>&1)
+            echo "::notice::create rc=$? out=$(echo "$create" | tr '\n' ' ' | cut -c1-150)"
           else
-            gh release edit latest --notes "$NOTES" --prerelease
+            edit=$(gh release edit latest --notes "$NOTES" --prerelease 2>&1)
+            echo "::notice::edit rc=$? out=$(echo "$edit" | tr '\n' ' ' | cut -c1-150)"
           fi
-          gh release upload latest BikeNav.ipa --clobber
+          up=$(gh release upload latest BikeNav.ipa --clobber 2>&1)
+          echo "::notice::upload rc=$? out=$(echo "$up" | tr '\n' ' ' | cut -c1-150)"
+          set -e
 
           # Prove it: a step that says success while the link is dead is worse
           # than a step that fails.
