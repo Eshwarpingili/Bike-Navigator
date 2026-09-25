@@ -84,6 +84,11 @@ typedef struct {
     uint8_t apple_write_err;
     uint16_t apple_notifs;
     bool apple_sub_lost;
+    /* Notification service: found at all, and how many calls have arrived.
+     * iOS gates this behind a per-device consent, so "found but silent" is a
+     * real state and has to be told apart from "not found". */
+    bool apple_ancs;
+    uint16_t apple_calls;
     uint8_t apple_ccc_err;  /* phone's answer to enabling notifications */
     uint8_t apple_sec;      /* link security level */
 
@@ -132,6 +137,9 @@ void nav_state_set_apple_status(bool paired, bool media, bool clock, uint8_t ser
 /* Extra numbers shown while diagnosing the phone link. */
 void nav_state_set_apple_debug(uint16_t entity, uint16_t ccc, uint8_t write_err,
                                uint16_t notifs, bool sub_lost, uint8_t ccc_err, uint8_t sec);
+
+/* Notification service state, for telling a missing service from a muted one. */
+void nav_state_set_ancs(bool found, uint16_t calls);
 
 /* Copy the current state out (thread safe). */
 void nav_state_snapshot(nav_state_t *out);

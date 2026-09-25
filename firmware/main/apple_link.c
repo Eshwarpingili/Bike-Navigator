@@ -107,6 +107,7 @@ static uint8_t g_pending_action; /* 1 = answer, 2 = decline, 0 = nothing */
 static char g_title[NAV_CALLER_MAX + 1];
 static uint8_t g_title_len;
 static uint16_t g_title_left;
+static uint16_t g_calls_seen;   /* call notifications the phone has sent */
 static bool g_subscribed;
 static uint8_t g_services_seen;
 static bool g_paired;
@@ -125,6 +126,7 @@ static void publish_status(void)
                                g_services_seen, g_att_err, g_subscribed);
     nav_state_set_apple_debug(g_entity_handle, g_entity_ccc, g_write_err, g_notif_count, g_sub_lost,
                               g_ccc_err, g_sec_level);
+    nav_state_set_ancs(g_notif_handle != 0, g_calls_seen);
 }
 
 static void next_step(enum step step)
@@ -281,6 +283,7 @@ static uint8_t on_notif_source(struct bt_conn *conn, struct bt_gatt_subscribe_pa
         return BT_GATT_ITER_CONTINUE; /* a modify tells us nothing new */
     }
 
+    g_calls_seen++;
     g_call_active = true;
     g_call_uid = uid;
     g_call_answerable = (flags & ANCS_FLAG_POSITIVE) != 0;
@@ -899,6 +902,7 @@ void apple_link_on_connect(struct bt_conn *conn)
     g_pending_action = 0;
     g_title_len = 0;
     g_title_left = 0;
+    g_calls_seen = 0;
     nav_state_clear_call();
     g_subscribed = false;
     g_write_err = 0xFF;

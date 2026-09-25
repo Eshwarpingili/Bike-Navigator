@@ -247,6 +247,17 @@ void nav_state_clear_call(void)
     xSemaphoreGive(g_lock);
 }
 
+void nav_state_set_ancs(bool found, uint16_t calls)
+{
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (g_state.apple_ancs != found || g_state.apple_calls != calls) {
+        g_state.apple_ancs = found;
+        g_state.apple_calls = calls;
+        g_state.version++;
+    }
+    xSemaphoreGive(g_lock);
+}
+
 void nav_state_set_volume(uint8_t percent)
 {
     xSemaphoreTake(g_lock, portMAX_DELAY);

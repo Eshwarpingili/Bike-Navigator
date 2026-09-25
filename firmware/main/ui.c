@@ -1510,8 +1510,15 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
         case SCR_SETTINGS:
             draw_brightness(ui.s_bl_val);
             draw_volume(ui.s_vol_val, s);
-            lv_label_set_text_fmt(ui.s_tap, "tap %d,%d  duty %u", (int)ui.last_x,
-                                  (int)ui.last_y, (unsigned)backlight_duty());
+            /* "no" means the phone never offered the service; "silent" means
+             * it did and has sent nothing, which on iOS means the per-device
+             * notification consent was never given. Those need different
+             * answers, so they are shown differently. */
+            lv_label_set_text_fmt(ui.s_tap, "tap %d,%d d%u\ncalls: %s",
+                                  (int)ui.last_x, (int)ui.last_y,
+                                  (unsigned)backlight_duty(),
+                                  !s->apple_ancs ? "no service"
+                                                 : (s->apple_calls ? "working" : "silent"));
             break;
         case SCR_HOME:
         default:
