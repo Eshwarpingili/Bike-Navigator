@@ -9,9 +9,10 @@ Fidelity, and its limits:
   * Output is quantized to RGB565 with ordered dithering, as the panel and
     LV_DITHER_GRADIENT do, so gradient banding shows up here rather than on the
     handlebars.
-  * Type is NOT exact. The board runs Montserrat compiled into LVGL as bitmaps,
-    and no Montserrat TTF ships in this tree, so the nearest installed face
-    stands in. Sizes and weights are right; letterforms are approximate.
+  * Type is the real face when the Inter TTFs are to hand - set BIKENAV_INTER
+    to the directory holding them, the same ones tools/gen_fonts.py uses.
+    Without them the nearest installed face stands in and only the sizes and
+    weights are right.
 
     python firmware/tools/preview_screens.py
 """
@@ -55,17 +56,34 @@ def mix(c1, c2, ratio_):
     return tuple((a[i] * ratio_ + b[i] * (255 - ratio_)) // 255 for i in range(3))
 
 
+# The board draws text in Inter (see tools/gen_fonts.py). Point this at the
+# same TTFs and the mock shows the real letterforms; without them it falls
+# back to whatever is installed and the type is only approximate.
+INTER_DIR = os.environ.get("BIKENAV_INTER", "C:/bnfont")
+
+
 def font(size, bold=False):
+    name = "Inter-SemiBold.ttf" if bold else "Inter-Regular.ttf"
+    p = os.path.join(INTER_DIR, name)
+    if os.path.exists(p):
+        return ImageFont.truetype(p, size)
     names = ("seguisb.ttf", "segoeui.ttf") if bold else ("segoeui.ttf",)
-    for name in names:
-        p = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", name)
-        if os.path.exists(p):
-            return ImageFont.truetype(p, size)
-    for name in ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            pass
+    for n in names:
+        q = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", n)
+        if os.path.exists(q):
+            return ImageFont.truetype(q, size)
+    try:
+        return ImageFont.truetype("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def sysfont(size):
+    """A face that actually carries the symbol glyphs, for the mock's icons."""
+    for n in ("seguisym.ttf", "segoeui.ttf", "arial.ttf"):
+        q = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", n)
+        if os.path.exists(q):
+            return ImageFont.truetype(q, size)
     return ImageFont.load_default()
 
 
@@ -179,7 +197,11 @@ def home(p, route_colour, code=25, pressed=None, no_route=False):
                    font(40 if no_route else 19, True),
                    rgb(p["text"] if no_route else p["map"]))
         else:
-            centre(d, [x0, y0 + 10, x1, y1 - 20], "\u2699", font(26), rgb(p["dim"]))
+            # The board gets this glyph from Montserrat, which every Inter face
+            # falls back to per glyph. The mock has no fallback, so it asks a
+            # system face directly rather than drawing a tofu box that the
+            # board will never show.
+            centre(d, [x0, y0 + 10, x1, y1 - 20], "\u2699", sysfont(26), rgb(p["dim"]))
             centre(d, [x0, y1 - 30, x1, y1 - 8], "70%", font(13), rgb(p["dim"]))
     return img
 

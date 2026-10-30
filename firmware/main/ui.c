@@ -9,6 +9,7 @@
 #include "logbuf.h"
 #include "mapdata.h"
 #include "lvgl.h"
+#include "fonts.h"
 #include "prefs.h"
 
 #define STALE_MS 8000
@@ -109,6 +110,24 @@ static void set_palette(bool light)
 #define COL_RED    lv_color_hex(0xE53935)
 #define COL_BAR    (g_pal.bar)
 #define COL_ACCENT (g_pal.accent)
+
+/* Inter carries every word on the board. Montserrat is still linked and is
+ * still what draws the icons: each Inter face falls back to it per glyph, so
+ * a label holding an icon and a word gets the right face for each without
+ * anything here having to know which is which.
+ *
+ * Montserrat is a geometric display face - round, wide, built for posters.
+ * Inter was drawn for screen UI: taller x-height, shorter extenders, open
+ * apertures, and figures of equal width, so a distance counting down does
+ * not jitter as its digits change. At 16 px behind a visor that is the
+ * difference between reading a word and recognising its shape. */
+#define F_SMALL  (&inter_12)   /* diagnostics */
+#define F_BODY   (&inter_16)   /* artist, street names, secondary lines */
+#define F_BODY_B (&inter_16b)  /* the one line in a group that leads */
+#define F_TITLE  (&inter_20)   /* the street you are turning onto */
+#define F_NUM    (&inter_28)   /* readouts: tile distance, volume, brightness */
+#define F_BIG    (&inter_48)   /* the distance to the manoeuvre, and the clock */
+
 #define COL_MUSIC  (g_pal.music)
 #define COL_MAP    (g_pal.map)
 
@@ -730,11 +749,11 @@ void ui_init(const char *device_name)
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Top bar */
-    ui.status = label(scr, &lv_font_montserrat_16, COL_DIM);
+    ui.status = label(scr, F_BODY, COL_DIM);
     lv_obj_align(ui.status, LV_ALIGN_TOP_LEFT, 8, 4);
-    ui.speed = label(scr, &lv_font_montserrat_16, COL_TEXT);
+    ui.speed = label(scr, F_BODY, COL_TEXT);
     lv_obj_align(ui.speed, LV_ALIGN_TOP_MID, ui.landscape ? 20 : 0, 4);
-    ui.clock = label(scr, &lv_font_montserrat_16, COL_TEXT);
+    ui.clock = label(scr, F_BODY, COL_TEXT);
     lv_obj_align(ui.clock, LV_ALIGN_TOP_RIGHT, -8, 4);
 
     /* Navigation view */
@@ -750,11 +769,11 @@ void ui_init(const char *device_name)
     lv_obj_align(ui.near_bar, LV_ALIGN_TOP_LEFT, 0, 0);
 
     ui.arrow = tinted_img(ui.nav, COL_TEXT);
-    ui.dist_num = label(ui.nav, &lv_font_montserrat_48, COL_TEXT);
-    ui.dist_unit = label(ui.nav, &lv_font_montserrat_20, COL_TEXT);
-    ui.street = label(ui.nav, &lv_font_montserrat_20, COL_TEXT);
+    ui.dist_num = label(ui.nav, F_BIG, COL_TEXT);
+    ui.dist_unit = label(ui.nav, F_TITLE, COL_TEXT);
+    ui.street = label(ui.nav, F_TITLE, COL_TEXT);
     lv_label_set_long_mode(ui.street, LV_LABEL_LONG_DOT);
-    ui.then_label = label(ui.nav, &lv_font_montserrat_16, COL_DIM);
+    ui.then_label = label(ui.nav, F_BODY, COL_DIM);
     lv_label_set_text(ui.then_label, "then");
     ui.then_arrow = tinted_img(ui.nav, COL_DIM);
 
@@ -785,7 +804,7 @@ void ui_init(const char *device_name)
     lv_obj_set_style_border_color(ui.limit, COL_RED, 0);
     lv_obj_set_style_border_width(ui.limit, 5, 0);
     lv_obj_align(ui.limit, ui.landscape ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT, ui.landscape ? -6 : 8, ui.landscape ? 128 : 8);
-    ui.limit_num = label(ui.limit, &lv_font_montserrat_16, lv_color_black());
+    ui.limit_num = label(ui.limit, F_BODY, lv_color_black());
     lv_obj_center(ui.limit_num);
 
     /* Bottom bar: remaining distance, time left, arrival time. */
@@ -793,11 +812,11 @@ void ui_init(const char *device_name)
     lv_obj_set_style_bg_color(ui.bar, COL_BAR, 0);
     lv_obj_set_style_bg_opa(ui.bar, LV_OPA_COVER, 0);
     lv_obj_align(ui.bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    ui.bar_left = label(ui.bar, &lv_font_montserrat_20, COL_TEXT);
+    ui.bar_left = label(ui.bar, F_TITLE, COL_TEXT);
     lv_obj_align(ui.bar_left, LV_ALIGN_LEFT_MID, 8, 0);
-    ui.bar_mid = label(ui.bar, &lv_font_montserrat_20, COL_TEXT);
+    ui.bar_mid = label(ui.bar, F_TITLE, COL_TEXT);
     lv_obj_align(ui.bar_mid, LV_ALIGN_CENTER, 0, 0);
-    ui.bar_right = label(ui.bar, &lv_font_montserrat_20, COL_GREEN);
+    ui.bar_right = label(ui.bar, F_TITLE, COL_GREEN);
     lv_obj_align(ui.bar_right, LV_ALIGN_RIGHT_MID, -8, 0);
 
     /* Home screen: four tiles. Route and music are the two things looked at
@@ -822,16 +841,16 @@ void ui_init(const char *device_name)
     lv_img_set_zoom(ui.home_arrow, 128); /* the nav-screen arrows at half size */
     lv_obj_align(ui.home_arrow, LV_ALIGN_LEFT_MID, -20, -8);
 
-    ui.home_dist = label(ui.tile_nav, &lv_font_montserrat_28, COL_TEXT);
+    ui.home_dist = label(ui.tile_nav, F_NUM, COL_TEXT);
     lv_obj_align(ui.home_dist, LV_ALIGN_TOP_RIGHT, -8, 10);
 
-    ui.home_street = label(ui.tile_nav, &lv_font_montserrat_16, COL_DIM);
+    ui.home_street = label(ui.tile_nav, F_BODY, COL_DIM);
     lv_obj_set_width(ui.home_street, tw - 12);
     lv_obj_set_style_text_align(ui.home_street, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.home_street, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.home_street, LV_ALIGN_BOTTOM_MID, 0, -8);
 
-    ui.home_none = label(ui.tile_nav, &lv_font_montserrat_20, COL_DIM);
+    ui.home_none = label(ui.tile_nav, F_TITLE, COL_DIM);
     lv_label_set_text(ui.home_none, "No route");
     lv_obj_center(ui.home_none);
 
@@ -839,13 +858,15 @@ void ui_init(const char *device_name)
     lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col2, MIN_GAP);
     ui.strip_media = tile_strip(ui.tile_media, tw, COL_MUSIC);
 
-    ui.track = label(ui.tile_media, &lv_font_montserrat_16, COL_TEXT);
+    /* The title leads this tile, so it carries the weight and the artist
+     * does not. Two lines of the same weight is a list, not a hierarchy. */
+    ui.track = label(ui.tile_media, F_BODY_B, COL_TEXT);
     lv_obj_set_width(ui.track, tw - 12);
     lv_obj_set_style_text_align(ui.track, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.track, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_align(ui.track, LV_ALIGN_TOP_MID, 0, 14);
 
-    ui.artist = label(ui.tile_media, &lv_font_montserrat_16, COL_DIM);
+    ui.artist = label(ui.tile_media, F_BODY, COL_DIM);
     lv_obj_set_width(ui.artist, tw - 12);
     lv_obj_set_style_text_align(ui.artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.artist, LV_LABEL_LONG_DOT);
@@ -853,7 +874,7 @@ void ui_init(const char *device_name)
 
     /* Short text only: the tile has no room for advice, and the diagnostics
      * screen already exists for that. */
-    ui.idle_msg = label(ui.tile_media, &lv_font_montserrat_16, COL_DIM);
+    ui.idle_msg = label(ui.tile_media, F_BODY, COL_DIM);
     lv_obj_set_width(ui.idle_msg, tw - 12);
     lv_obj_set_style_text_align(ui.idle_msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.idle_msg, LV_LABEL_LONG_WRAP);
@@ -865,21 +886,21 @@ void ui_init(const char *device_name)
     ui.tile_clock = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, MIN_GAP, row2);
     ui.strip_clock = tile_strip(ui.tile_clock, tw, COL_MAP);
-    ui.idle_clock = label(ui.tile_clock, &lv_font_montserrat_48, COL_TEXT);
+    ui.idle_clock = label(ui.tile_clock, F_BIG, COL_TEXT);
     lv_obj_center(ui.idle_clock);
     /* Teal, not the accent blue: the accent means a slight turn, and this tile
      * sits one row under the arrow that uses it. */
-    ui.tile_map = label(ui.tile_clock, &lv_font_montserrat_20, COL_MAP);
+    ui.tile_map = label(ui.tile_clock, F_TITLE, COL_MAP);
     lv_label_set_text(ui.tile_map, LV_SYMBOL_GPS " Map");
     lv_obj_center(ui.tile_map);
 
     ui.tile_set = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_set, LV_ALIGN_TOP_LEFT, col2, row2);
     ui.strip_set = tile_strip(ui.tile_set, tw, g_pal.edge);
-    lv_obj_t *set_icon = label(ui.tile_set, &lv_font_montserrat_28, COL_DIM);
+    lv_obj_t *set_icon = label(ui.tile_set, F_NUM, COL_DIM);
     lv_label_set_text(set_icon, LV_SYMBOL_SETTINGS);
     lv_obj_align(set_icon, LV_ALIGN_CENTER, 0, -14);
-    ui.tile_set_val = label(ui.tile_set, &lv_font_montserrat_16, COL_DIM);
+    ui.tile_set_val = label(ui.tile_set, F_BODY, COL_DIM);
     lv_obj_align(ui.tile_set_val, LV_ALIGN_CENTER, 0, 22);
 
     /* Full-screen music: the same controls, big enough for a gloved thumb,
@@ -887,18 +908,18 @@ void ui_init(const char *device_name)
     ui.music = box(scr, W, H - 26);
     lv_obj_align(ui.music, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    ui.m_back = button(ui.music, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
+    ui.m_back = button(ui.music, 58, 34, LV_SYMBOL_LEFT, F_TITLE);
     lv_obj_align(ui.m_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
 
     /* Narrowed to clear the back button: a long title would otherwise run
      * underneath it and make it look like part of the text. */
-    ui.m_title = label(ui.music, &lv_font_montserrat_28, COL_TEXT);
+    ui.m_title = label(ui.music, F_NUM, COL_TEXT);
     lv_obj_set_width(ui.m_title, W - 150);
     lv_obj_set_style_text_align(ui.m_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.m_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_align(ui.m_title, LV_ALIGN_TOP_MID, 20, 4);
 
-    ui.m_artist = label(ui.music, &lv_font_montserrat_20, COL_DIM);
+    ui.m_artist = label(ui.music, F_TITLE, COL_DIM);
     lv_obj_set_width(ui.m_artist, W - 20);
     lv_obj_set_style_text_align(ui.m_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.m_artist, LV_LABEL_LONG_DOT);
@@ -908,37 +929,37 @@ void ui_init(const char *device_name)
      * margin hit testing adds, so the bottom of "next" and the top of "volume"
      * overlapped and a tap between them could land on either. */
     lv_coord_t bw = (W - 56) / 3;
-    ui.m_prev = button(ui.music, bw, 58, LV_SYMBOL_PREV, &lv_font_montserrat_28);
+    ui.m_prev = button(ui.music, bw, 58, LV_SYMBOL_PREV, F_NUM);
     lv_obj_align(ui.m_prev, LV_ALIGN_TOP_LEFT, 10, 84);
-    ui.m_play = button(ui.music, bw, 58, LV_SYMBOL_PLAY, &lv_font_montserrat_28);
+    ui.m_play = button(ui.music, bw, 58, LV_SYMBOL_PLAY, F_NUM);
     lv_obj_align(ui.m_play, LV_ALIGN_TOP_LEFT, 10 + bw + 18, 84);
-    ui.m_next = button(ui.music, bw, 58, LV_SYMBOL_NEXT, &lv_font_montserrat_28);
+    ui.m_next = button(ui.music, bw, 58, LV_SYMBOL_NEXT, F_NUM);
     lv_obj_align(ui.m_next, LV_ALIGN_TOP_LEFT, 10 + 2 * (bw + 18), 84);
 
     /* The level sits between its own two buttons. It used to be a card that
      * floated in from the bottom - which landed exactly on top of the volume
      * buttons, so the feedback covered the thing it was reporting on. */
-    ui.m_vol_down = button(ui.music, 92, 52, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_20);
+    ui.m_vol_down = button(ui.music, 92, 52, LV_SYMBOL_VOLUME_MID, F_TITLE);
     lv_obj_align(ui.m_vol_down, LV_ALIGN_TOP_LEFT, 12, 156);
-    ui.m_vol_val = label(ui.music, &lv_font_montserrat_20, COL_TEXT);
+    ui.m_vol_val = label(ui.music, F_TITLE, COL_TEXT);
     lv_obj_set_width(ui.m_vol_val, 84);
     lv_obj_set_style_text_align(ui.m_vol_val, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(ui.m_vol_val, LV_ALIGN_TOP_MID, 0, 170);
-    ui.m_vol_up = button(ui.music, 92, 52, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_20);
+    ui.m_vol_up = button(ui.music, 92, 52, LV_SYMBOL_VOLUME_MAX, F_TITLE);
     lv_obj_align(ui.m_vol_up, LV_ALIGN_TOP_RIGHT, -12, 156);
 
     /* Settings: brightness and volume, one row each. */
     ui.settings = box(scr, W, H - 26);
     lv_obj_align(ui.settings, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    ui.s_back = button(ui.settings, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
+    ui.s_back = button(ui.settings, 58, 34, LV_SYMBOL_LEFT, F_TITLE);
     lv_obj_align(ui.s_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
 
-    lv_obj_t *bl_head = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
+    lv_obj_t *bl_head = label(ui.settings, F_BODY, COL_DIM);
     lv_label_set_text(bl_head, "Brightness");
     lv_obj_align(bl_head, LV_ALIGN_TOP_LEFT, 82, 10);
 
-    ui.s_bl_down = button(ui.settings, 72, 52, LV_SYMBOL_MINUS, &lv_font_montserrat_28);
+    ui.s_bl_down = button(ui.settings, 72, 52, LV_SYMBOL_MINUS, F_NUM);
     lv_obj_align(ui.s_bl_down, LV_ALIGN_TOP_LEFT, 12, 50);
     /* Tapping the reading itself switches automatic on and off, so minus always
      * dims and plus always brightens - a cycle that wrapped from Auto round to
@@ -947,32 +968,32 @@ void ui_init(const char *device_name)
      * put a control that dims the screen right next to the one that brightens
      * it - and made "plus made it dimmer" a thing that could happen from a tap
      * landing slightly left. Automatic has its own button now. */
-    ui.s_bl_val = label(ui.settings, &lv_font_montserrat_28, COL_TEXT);
+    ui.s_bl_val = label(ui.settings, F_NUM, COL_TEXT);
     lv_obj_set_width(ui.s_bl_val, 120);
     lv_obj_set_style_text_align(ui.s_bl_val, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(ui.s_bl_val, LV_ALIGN_TOP_MID, 0, 62);
-    ui.s_bl_up = button(ui.settings, 72, 52, LV_SYMBOL_PLUS, &lv_font_montserrat_28);
+    ui.s_bl_up = button(ui.settings, 72, 52, LV_SYMBOL_PLUS, F_NUM);
     lv_obj_align(ui.s_bl_up, LV_ALIGN_TOP_RIGHT, -12, 50);
 
-    ui.s_vol_down = button(ui.settings, 72, 52, LV_SYMBOL_VOLUME_MID, &lv_font_montserrat_28);
+    ui.s_vol_down = button(ui.settings, 72, 52, LV_SYMBOL_VOLUME_MID, F_NUM);
     lv_obj_align(ui.s_vol_down, LV_ALIGN_TOP_LEFT, 12, 116);
-    ui.s_vol_val = label(ui.settings, &lv_font_montserrat_28, COL_TEXT);
+    ui.s_vol_val = label(ui.settings, F_NUM, COL_TEXT);
     lv_obj_set_width(ui.s_vol_val, 120);
     lv_obj_set_style_text_align(ui.s_vol_val, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(ui.s_vol_val, LV_ALIGN_TOP_MID, 0, 128);
-    ui.s_vol_up = button(ui.settings, 72, 52, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_28);
+    ui.s_vol_up = button(ui.settings, 72, 52, LV_SYMBOL_VOLUME_MAX, F_NUM);
     lv_obj_align(ui.s_vol_up, LV_ALIGN_TOP_RIGHT, -12, 116);
 
     /* Narrowed to leave the bottom-right corner for the readout below, which
      * needs three lines now and used to run off the bottom of the screen. */
-    ui.s_auto = button(ui.settings, 110, 30, "Auto", &lv_font_montserrat_16);
+    ui.s_auto = button(ui.settings, 110, 30, "Auto", F_BODY);
     lv_obj_align(ui.s_auto, LV_ALIGN_TOP_LEFT, 12, 182);
 
     /* What the touch panel actually reported, what the backlight is actually
      * set to, and whether the phone is really feeding calls and music. The
      * board has no other way to say any of it, and guessing has cost enough.
      * Small type on purpose: it is for diagnosing, not for riding. */
-    ui.s_tap = label(ui.settings, &lv_font_montserrat_12, COL_DIM);
+    ui.s_tap = label(ui.settings, F_SMALL, COL_DIM);
     lv_obj_set_style_text_align(ui.s_tap, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(ui.s_tap, LV_ALIGN_TOP_RIGHT, -12, 168);
 
@@ -999,7 +1020,7 @@ void ui_init(const char *device_name)
     lv_obj_set_style_border_color(ui.map_me, g_pal.bg, 0);
     lv_obj_set_style_border_width(ui.map_me, 2, 0);
 
-    ui.map_scale = label(ui.map, &lv_font_montserrat_16, COL_DIM);
+    ui.map_scale = label(ui.map, F_BODY, COL_DIM);
     lv_obj_align(ui.map_scale, LV_ALIGN_BOTTOM_RIGHT, -10, -6);
 
     /* The turn rides along the top of the map. A map with no instruction on it
@@ -1008,36 +1029,36 @@ void ui_init(const char *device_name)
     lv_img_set_zoom(ui.map_arrow, 96);
     lv_obj_align(ui.map_arrow, LV_ALIGN_TOP_LEFT, 62, -16);
 
-    ui.map_dist = label(ui.map, &lv_font_montserrat_28, COL_TEXT);
+    ui.map_dist = label(ui.map, F_NUM, COL_TEXT);
     lv_obj_align(ui.map_dist, LV_ALIGN_TOP_LEFT, 132, 2);
 
-    ui.map_street = label(ui.map, &lv_font_montserrat_16, COL_DIM);
+    ui.map_street = label(ui.map, F_BODY, COL_DIM);
     lv_obj_set_width(ui.map_street, W - 142);
     lv_label_set_long_mode(ui.map_street, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.map_street, LV_ALIGN_TOP_LEFT, 132, 36);
 
-    ui.map_back = button(ui.map, 58, 34, LV_SYMBOL_LEFT, &lv_font_montserrat_20);
+    ui.map_back = button(ui.map, 58, 34, LV_SYMBOL_LEFT, F_TITLE);
     lv_obj_align(ui.map_back, LV_ALIGN_TOP_LEFT, MIN_GAP, 2);
 
     /* An incoming call: nothing else on the screen, two large targets. */
     ui.call = box(scr, W, H - 26);
     lv_obj_align(ui.call, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    lv_obj_t *call_head = label(ui.call, &lv_font_montserrat_20, COL_DIM);
+    lv_obj_t *call_head = label(ui.call, F_TITLE, COL_DIM);
     lv_label_set_text(call_head, "Incoming call");
     lv_obj_align(call_head, LV_ALIGN_TOP_MID, 0, 8);
 
-    ui.call_who = label(ui.call, &lv_font_montserrat_28, COL_TEXT);
+    ui.call_who = label(ui.call, F_NUM, COL_TEXT);
     lv_obj_set_width(ui.call_who, W - 24);
     lv_obj_set_style_text_align(ui.call_who, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.call_who, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.call_who, LV_ALIGN_TOP_MID, 0, 44);
 
     lv_coord_t cw = (W - 24 - MIN_GAP) / 2;
-    ui.call_answer = button(ui.call, cw, 68, LV_SYMBOL_CALL, &lv_font_montserrat_28);
+    ui.call_answer = button(ui.call, cw, 68, LV_SYMBOL_CALL, F_NUM);
     lv_obj_set_style_bg_color(ui.call_answer, COL_GREEN, 0);
     lv_obj_align(ui.call_answer, LV_ALIGN_TOP_LEFT, 12, 112);
-    ui.call_decline = button(ui.call, cw, 68, LV_SYMBOL_CLOSE, &lv_font_montserrat_28);
+    ui.call_decline = button(ui.call, cw, 68, LV_SYMBOL_CLOSE, F_NUM);
     lv_obj_set_style_bg_color(ui.call_decline, COL_RED, 0);
     lv_obj_align(ui.call_decline, LV_ALIGN_TOP_RIGHT, -12, 112);
 
@@ -1047,13 +1068,13 @@ void ui_init(const char *device_name)
     ui.diag = box(scr, W, H - 26);
     lv_obj_align(ui.diag, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    ui.link_state = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
+    ui.link_state = label(ui.diag, F_SMALL, COL_DIM);
     lv_obj_align(ui.link_state, LV_ALIGN_BOTTOM_LEFT, 6, -4);
 
-    ui.link_state2 = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
+    ui.link_state2 = label(ui.diag, F_SMALL, COL_DIM);
     lv_obj_align(ui.link_state2, LV_ALIGN_BOTTOM_LEFT, 6, -20);
 
-    ui.log_label = label(ui.diag, &lv_font_montserrat_12, COL_DIM);
+    ui.log_label = label(ui.diag, F_SMALL, COL_DIM);
     lv_obj_set_width(ui.log_label, W - 12);
     lv_obj_align(ui.log_label, LV_ALIGN_TOP_LEFT, 6, 14);
 
@@ -1272,7 +1293,7 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     } else {
         fmt_distance(s->distance_m, num, sizeof(num), &unit);
     }
-    lv_obj_set_style_text_font(ui.dist_num, strlen(num) > 5 ? &lv_font_montserrat_20 : &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(ui.dist_num, strlen(num) > 5 ? F_TITLE : F_BIG, 0);
     lv_label_set_text(ui.dist_num, num);
     lv_obj_set_style_text_color(ui.dist_num, main_col, 0);
     lv_label_set_text(ui.dist_unit, unit);
