@@ -143,7 +143,7 @@ enum Wallpaper {
     /// teaches the rider they can also mean nothing, so the app measures it
     /// and says so rather than quietly shipping a photo that undermines the
     /// one channel that has to stay rigid.
-    static func severityFraction(_ b: Buffer) -> Double {
+    private static func severityFraction(_ b: Buffer) -> Double {
         var total = 0, bad = 0
         for y in stride(from: 0, to: b.h, by: 3) {
             for x in stride(from: 0, to: b.w, by: 3) {
