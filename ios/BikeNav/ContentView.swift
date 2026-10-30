@@ -1,4 +1,5 @@
 import MapKit
+import PhotosUI
 import SwiftUI
 
 struct ContentView: View {
@@ -245,6 +246,15 @@ private struct SettingsView: View {
                 } footer: {
                     Text("On in India, the UK and similar countries. Changes how roundabout arrows are drawn.")
                 }
+                Section {
+                    WallpaperPicker()
+                } header: {
+                    Text("Display background")
+                } footer: {
+                    Text("Sent once and kept on the display, so it is there the "
+                         + "moment you switch on with no phone involved.")
+                }
+
                 Section("Tips") {
                     Text("Hold a finger on the display for 2 seconds to turn the picture upside down.")
                     Text("Directions keep working with the phone locked in your pocket. Leave BikeNav open in the background.")
@@ -268,4 +278,91 @@ func formatDistance(_ m: Double) -> String {
 
 func formatKm(_ m: Double) -> String {
     m < 10_000 ? String(format: "%.1f km", m / 1000) : "\(Int((m / 1000).rounded())) km"
+}
+
+
+/// Pick a photo, see exactly what the board will draw, send it once.
+private struct WallpaperPicker: View {
+    @EnvironmentObject private var link: BLELink
+    @StateObject private var sender = WallpaperSender()
+    @State private var item: PhotosPickerItem?
+    @State private var face: Wallpaper.Face = .night
+    @State private var rendered: Wallpaper.Rendered?
+    @State private var working = false
+
+    var body: some View {
+        Picker("Face", selection: $face) {
+            Text("Night").tag(Wallpaper.Face.night)
+            Text("Day").tag(Wallpaper.Face.day)
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: face) { _, _ in rerender() }
+
+        PhotosPicker(selection: $item, matching: .images) {
+            Label(rendered == nil ? "Choose a photo" : "Choose a different photo",
+                  systemImage: "photo")
+        }
+        .onChange(of: item) { _, _ in rerender() }
+
+        if let r = rendered {
+            // The real 320x240, dithered the way the panel will show it, so
+            // what is on screen here is what ends up on the bars.
+            Image(uiImage: r.image)
+                .resizable()
+                .interpolation(.none)
+                .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+            if r.severityFraction > 0.08 {
+                Label("\(Int(r.severityFraction * 100))% of this photo is in the "
+                      + "reds, ambers and greens the display reserves for turn "
+                      + "warnings. It will still send, but those colours mean "
+                      + "less once the background borrows them.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+        }
+
+        switch sender.phase {
+        case .sending(let p):
+            HStack {
+                ProgressView(value: p)
+                Text("\(Int(p * 100))%").monospacedDigit().foregroundStyle(.secondary)
+            }
+            Button("Cancel", role: .cancel) { sender.cancel() }
+        case .failed(let why):
+            Text(why).font(.footnote).foregroundStyle(.red)
+            sendButton
+        case .done:
+            Label("Sent to the display", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            sendButton
+        case .idle:
+            sendButton
+        }
+    }
+
+    @ViewBuilder private var sendButton: some View {
+        Button("Send to display") {
+            if let r = rendered { sender.send(r.pixels, face: face, over: link) }
+        }
+        .disabled(rendered == nil || link.state != .connected || working)
+    }
+
+    private func rerender() {
+        guard let item else { return }
+        working = true
+        Task {
+            defer { working = false }
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let ui = UIImage(data: data) else { return }
+            // Off the main actor: the dither walks every pixel three times.
+            let out = await Task.detached(priority: .userInitiated) {
+                Wallpaper.render(ui, face: face)
+            }.value
+            await MainActor.run { rendered = out }
+        }
+    }
 }

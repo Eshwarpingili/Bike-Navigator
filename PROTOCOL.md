@@ -111,3 +111,32 @@ are the one on top.
 The board sends an indication on `DD3F0AD2` every 4 s while connected and not receiving
 data, carrying one byte: `0x01` = waiting for data. Sygic uses this as a keep-alive;
 centrals may ignore it.
+
+## 0x07 — wallpaper
+
+The background the board draws its cards on. 320x240 RGB565, little endian,
+153,600 bytes, which is far more than the 128-byte packets everything else on
+this link uses, so it arrives in pieces sized to what flash can erase.
+
+The phone does all the work: centre-crop to 4:3, scale, tone for the face,
+gradient, and Floyd-Steinberg dither to 5/6/5. The board receives finished
+pixels and blits them. That split is deliberate — this end has Core Graphics
+and a real processor, the other has 48 KB of UI heap.
+
+| Sub | Payload | Meaning |
+|---|---|---|
+| `0x00` | face(1), sectors(2), bytes(4) | about to start; erase first |
+| `0x01` | sector(2), offset(2), pixels | one chunk, 112 bytes of picture |
+| `0x02` | — | all sectors in; commit and draw |
+
+`face` is 0 for night, 1 for day. Sectors are 4096 bytes, the smallest unit
+flash can erase, so the board never has to hold a part-sector anywhere.
+
+Transfer happens only while the app is open, and that is the design rather than
+a limitation: the board keeps what it receives and reads it at boot with no
+phone involved. A ride never waits on this, and a sideload that has expired
+never leaves the screen blank.
+
+Chunks are paced rather than blasted. This link also carries the turn the rider
+is currently following, and a background picture must never be why an
+instruction is late.

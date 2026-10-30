@@ -181,6 +181,37 @@ enum Packet {
         return UInt32(min(max(m, 0), 4_000_000_000).rounded())
     }
 
+    // MARK: - Wallpaper (0x07)
+
+    /// How much picture rides in one packet. The board's receive buffer is
+    /// 128 bytes and the header takes 6, so 112 leaves room and stays a round
+    /// number that divides a 4096-byte sector evenly enough.
+    static let wallpaperChunkBytes = 112
+
+    /// 0x07 0x00 | face | sectors(2) | bytes(4)
+    /// Announces the transfer so the board can erase its flash sector before
+    /// anything arrives, rather than erasing under a write already in flight.
+    static func wallpaperBegin(face: Wallpaper.Face, sectors: UInt16, bytes: UInt32) -> Data {
+        var d = Data([0x07, 0x00, face == .night ? 0 : 1])
+        d.appendLE(sectors)
+        d.appendLE(bytes)
+        return d
+    }
+
+    /// 0x07 0x01 | sector(2) | offset(2) | pixels...
+    /// RGB565 little endian, the order the panel wants at LV_COLOR_DEPTH 16
+    /// with LV_COLOR_16_SWAP 0.
+    static func wallpaperChunk(sector: UInt16, offset: UInt16, bytes: Data) -> Data {
+        var d = Data([0x07, 0x01])
+        d.appendLE(sector)
+        d.appendLE(offset)
+        d.append(bytes)
+        return d
+    }
+
+    /// 0x07 0x02 - every sector is in; commit and start drawing it.
+    static func wallpaperEnd() -> Data { Data([0x07, 0x02]) }
+
     static func asciiText(_ s: String, maxBytes: Int) -> Data {
         let latin = s.applyingTransform(.toLatin, reverse: false) ?? s
         let plain = latin.applyingTransform(.stripDiacritics, reverse: false) ?? latin
