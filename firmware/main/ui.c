@@ -772,23 +772,29 @@ void ui_init(const char *device_name)
     ui.tile_nav = card(ui.idle, panel_w, body_h);
     lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, MIN_GAP, MIN_GAP);
 
-    /* The arrow is a 132 px asset shown at about 70, and how LVGL places a
-     * zoomed image is not obvious: in its default VIRTUAL size mode the
-     * object keeps the ORIGINAL size and the shrunken picture floats in the
-     * middle of it, so the object has to be hung off the card's edge by the
-     * difference to make the picture land where it looks placed. Negative
-     * offsets then put the object's corner outside the card, and a card with
-     * an 18 px radius clips its children to that rounded shape - which took
-     * the arrow with it.
+    /* Shrinking an image in LVGL is not a matter of setting a zoom and an
+     * alignment, and two attempts at this were wrong.
      *
-     * REAL size mode makes the object the size of the picture that is
-     * actually drawn, so it can be aligned like anything else, inside the
-     * card, where nothing clips it. */
-    ui.home_arrow = tinted_img(ui.tile_nav, COL_ACCENT);
-    lv_img_set_size_mode(ui.home_arrow, LV_IMG_SIZE_MODE_REAL);
-    lv_obj_set_size(ui.home_arrow, 72, 72);
-    lv_img_set_zoom(ui.home_arrow, 140);  /* 132 px asset -> 72 */
-    lv_obj_align(ui.home_arrow, LV_ALIGN_TOP_LEFT, 8, 16);
+     * In the default VIRTUAL size mode the object keeps the SOURCE size and
+     * the scaled picture is drawn centred inside it, so the object has to
+     * hang off the card by (src - scaled)/2 for the picture to land where it
+     * looks placed. REAL mode is not the fix: lv_img.c shifts the draw area
+     * by that same half-difference, so it ends up in the same place. Either
+     * way the object's corner lands outside the card, and a card with an
+     * 18 px radius clips its children to that rounded shape - which is what
+     * was eating the arrow.
+     *
+     * So the arrow gets a square, radius-0 holder of exactly the drawn size.
+     * The image sits inside it at minus half the difference, which puts its
+     * centred content exactly over the holder, and the holder has no rounded
+     * corner to clip it with. The arithmetic is written down rather than
+     * tuned by eye: 132 source at zoom 140/256 draws 72, so the offset is
+     * (132 - 72) / 2 = 30. */
+    lv_obj_t *arrow_box = box(ui.tile_nav, 72, 72);
+    lv_obj_align(arrow_box, LV_ALIGN_TOP_LEFT, 8, 16);
+    ui.home_arrow = tinted_img(arrow_box, COL_ACCENT);
+    lv_img_set_zoom(ui.home_arrow, 140);
+    lv_obj_align(ui.home_arrow, LV_ALIGN_TOP_LEFT, -30, -30);
 
     ui.home_dist = label(ui.tile_nav, F_BIG, COL_TEXT);
     lv_obj_align(ui.home_dist, LV_ALIGN_TOP_LEFT, 80, 18);
@@ -809,11 +815,13 @@ void ui_init(const char *device_name)
     ui.home_then_lbl = label(ui.tile_nav, F_SMALL, COL_DIM);
     lv_label_set_text(ui.home_then_lbl, "then");
     lv_obj_align(ui.home_then_lbl, LV_ALIGN_TOP_LEFT, 12, 146);
-    ui.home_then = tinted_img(ui.tile_nav, COL_DIM);
-    lv_img_set_size_mode(ui.home_then, LV_IMG_SIZE_MODE_REAL);
-    lv_obj_set_size(ui.home_then, 26, 26);
-    lv_img_set_zoom(ui.home_then, 166);  /* the 40 px asset -> 26 */
-    lv_obj_align(ui.home_then, LV_ALIGN_TOP_LEFT, 44, 142);
+    /* Same holder trick, same arithmetic: 40 source at 166/256 draws 26, so
+     * the offset is (40 - 26) / 2 = 7. */
+    lv_obj_t *then_box = box(ui.tile_nav, 26, 26);
+    lv_obj_align(then_box, LV_ALIGN_TOP_LEFT, 44, 142);
+    ui.home_then = tinted_img(then_box, COL_DIM);
+    lv_img_set_zoom(ui.home_then, 166);
+    lv_obj_align(ui.home_then, LV_ALIGN_TOP_LEFT, -7, -7);
 
     /* The trip, along the bottom of the panel it belongs to rather than in a
      * bar of its own: it is about this route, not about the board. */
@@ -1374,7 +1382,7 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
                     n = NAV_STREET_MAX;
                 }
                 memcpy(head, s->street, n);
-                head[n] = ' ';
+                head[n] = '\0';
                 road = sep + 2;
             } else {
                 snprintf(head, sizeof(head), "%s", s->street);
