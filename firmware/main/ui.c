@@ -770,9 +770,23 @@ void ui_init(const char *device_name)
     ui.tile_nav = card(ui.idle, panel_w, body_h);
     lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, MIN_GAP, MIN_GAP);
 
+    /* The arrow is a 132 px asset shown at about 70, and how LVGL places a
+     * zoomed image is not obvious: in its default VIRTUAL size mode the
+     * object keeps the ORIGINAL size and the shrunken picture floats in the
+     * middle of it, so the object has to be hung off the card's edge by the
+     * difference to make the picture land where it looks placed. Negative
+     * offsets then put the object's corner outside the card, and a card with
+     * an 18 px radius clips its children to that rounded shape - which took
+     * the arrow with it.
+     *
+     * REAL size mode makes the object the size of the picture that is
+     * actually drawn, so it can be aligned like anything else, inside the
+     * card, where nothing clips it. */
     ui.home_arrow = tinted_img(ui.tile_nav, COL_ACCENT);
-    lv_img_set_zoom(ui.home_arrow, 166);
-    lv_obj_align(ui.home_arrow, LV_ALIGN_TOP_LEFT, -24, -14);
+    lv_img_set_size_mode(ui.home_arrow, LV_IMG_SIZE_MODE_REAL);
+    lv_obj_set_size(ui.home_arrow, 72, 72);
+    lv_img_set_zoom(ui.home_arrow, 140);  /* 132 px asset -> 72 */
+    lv_obj_align(ui.home_arrow, LV_ALIGN_TOP_LEFT, 8, 16);
 
     ui.home_dist = label(ui.tile_nav, F_BIG, COL_TEXT);
     lv_obj_align(ui.home_dist, LV_ALIGN_TOP_LEFT, 80, 18);
