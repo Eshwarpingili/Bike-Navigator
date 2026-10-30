@@ -231,8 +231,6 @@ final class Navigator: NSObject, ObservableObject {
                          gpsWeak: weakFix)
         guidance = g
         link.send(Packet.navigation(g))
-        sendPosition(loc, path: path, along: p.along)
-        sendShape(path: path, along: p.along, location: loc)
 
         if let t = arrivedAt, Date().timeIntervalSince(t) > 20 { stop() }
     }
@@ -240,34 +238,10 @@ final class Navigator: NSObject, ObservableObject {
     /// Where the rider is, so the board can draw its stored streets around
     /// them. Sent on movement rather than on every fix: the map redraws when
     /// this changes, and each redraw is a few hundred points of arithmetic.
-    private func sendPosition(_ loc: CLLocation, path: RoutePath, along: Double) {
-        if let last = positionSentAt, loc.distance(from: last) < 8,
-           abs(loc.timestamp.timeIntervalSince(last.timestamp)) < 5 {
-            return
-        }
-        positionSentAt = loc
-        // Same reasoning as the route shape: below walking pace the course is
-        // noise, and the route's own heading keeps the map from spinning.
-        let heading = loc.course >= 0 && loc.speed > 2 ? loc.course : path.heading(after: along)
-        link.send(Packet.position(loc.coordinate, heading: heading))
-    }
-
     /// The road ahead, for the board to draw. Only worth resending once the
     /// rider has actually moved along it: the board redraws on change, and the
     /// link is slow enough that sending an identical shape every fix would
     /// crowd out the turn instructions, which matter more.
-    private func sendShape(path: RoutePath, along: Double, location: CLLocation) {
-        if let last = shapeSentAlong, abs(along - last) < 40 { return }
-        // Course is unreliable below walking pace, and the route's own heading
-        // is steadier anyway - the map should not spin while stopped at a light.
-        let heading = location.course >= 0 && location.speed > 2
-            ? location.course
-            : path.heading(after: along)
-        guard let packet = Packet.routeShape(path: path, along: along, heading: heading) else { return }
-        shapeSentAlong = along
-        link.send(packet)
-    }
-
     private func reroute(from coordinate: CLLocationCoordinate2D) {
         // A request that never comes back used to leave `rerouting` set for
         // good, and with it every future reroute - the app would quietly stop
