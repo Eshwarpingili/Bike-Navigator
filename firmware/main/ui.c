@@ -213,6 +213,8 @@ static struct {
     lv_obj_t *tile_set_val;
     lv_obj_t *home_unit;   /* the "m" / "km" beside the distance */
     lv_obj_t *home_onto;   /* the road being joined */
+    lv_obj_t *home_then;   /* the turn after this one */
+    lv_obj_t *home_then_lbl;
     lv_obj_t *home_trip;   /* remaining, time left, arrival */
     lv_obj_t *wallpaper;   /* the colour the glass cards sit on */
 
@@ -800,7 +802,18 @@ void ui_init(const char *device_name)
     ui.home_onto = label(ui.tile_nav, F_BODY, COL_DIM);
     lv_obj_set_width(ui.home_onto, panel_w - 24);
     lv_label_set_long_mode(ui.home_onto, LV_LABEL_LONG_DOT);
-    lv_obj_align(ui.home_onto, LV_ALIGN_TOP_LEFT, 12, 126);
+    lv_obj_align(ui.home_onto, LV_ALIGN_TOP_LEFT, 12, 122);
+
+    /* The turn after this one, which the dashboard was not showing at all.
+     * Small and dim on purpose: it is context, not the instruction. */
+    ui.home_then_lbl = label(ui.tile_nav, F_SMALL, COL_DIM);
+    lv_label_set_text(ui.home_then_lbl, "then");
+    lv_obj_align(ui.home_then_lbl, LV_ALIGN_TOP_LEFT, 12, 146);
+    ui.home_then = tinted_img(ui.tile_nav, COL_DIM);
+    lv_img_set_size_mode(ui.home_then, LV_IMG_SIZE_MODE_REAL);
+    lv_obj_set_size(ui.home_then, 26, 26);
+    lv_img_set_zoom(ui.home_then, 166);  /* the 40 px asset -> 26 */
+    lv_obj_align(ui.home_then, LV_ALIGN_TOP_LEFT, 44, 142);
 
     /* The trip, along the bottom of the panel it belongs to rather than in a
      * bar of its own: it is about this route, not about the board. */
@@ -1310,6 +1323,8 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     set_hidden(ui.home_street, !has_route);
     set_hidden(ui.home_onto, !has_route);
     set_hidden(ui.home_trip, !has_route);
+    set_hidden(ui.home_then, !has_route);
+    set_hidden(ui.home_then_lbl, !has_route);
     set_hidden(ui.home_none, has_route);
     if (has_route) {
         char num[16], buf[48];
@@ -1331,8 +1346,52 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
         lv_obj_update_layout(ui.home_dist);
         lv_obj_align_to(ui.home_unit, ui.home_dist, LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -6);
 
-        set_text(ui.home_street, s->flags & NAV_FLAG_REROUTING ? "Rerouting..." : s->street);
-        set_text(ui.home_onto, s->then_direction != DIR_NONE ? "then" : "");
+        /* The phone sends one string, because the protocol has one text
+         * field. ManeuverBuilder writes it as "<manoeuvre>, <road>" when it
+         * knows both - "3rd exit right, MG Road" - and as one or the other
+         * when it does not. Split on that comma so the road gets its own,
+         * quieter line; when there is no comma the whole string is the
+         * manoeuvre and the second line stays empty, which is honest: MapKit
+         * did not name a road.
+         *
+         * Split on the LAST comma. A road name may contain one; the
+         * separator the app writes is always the final one. */
+        if (s->flags & NAV_FLAG_REROUTING) {
+            set_text(ui.home_street, "Rerouting...");
+            set_text(ui.home_onto, "");
+        } else {
+            char head[NAV_STREET_MAX + 1];
+            const char *road = "";
+            const char *sep = NULL;
+            for (const char *c = s->street; *c; c++) {
+                if (c[0] == ',' && c[1] == ' ') {
+                    sep = c;
+                }
+            }
+            if (sep != NULL) {
+                size_t n = (size_t)(sep - s->street);
+                if (n > NAV_STREET_MAX) {
+                    n = NAV_STREET_MAX;
+                }
+                memcpy(head, s->street, n);
+                head[n] = ' ';
+                road = sep + 2;
+            } else {
+                snprintf(head, sizeof(head), "%s", s->street);
+            }
+            set_text(ui.home_street, head);
+            set_text(ui.home_onto, road);
+        }
+
+        const lv_img_dsc_t *then_img = arrow_for_direction(s->then_direction, true);
+        bool show_then = then_img != NULL && !arrived &&
+                         !(s->flags & NAV_FLAG_REROUTING);
+        set_hidden(ui.home_then, !show_then);
+        set_hidden(ui.home_then_lbl, !show_then);
+        if (show_then) {
+            lv_img_set_src(ui.home_then, then_img);
+            lv_obj_set_style_img_recolor(ui.home_then, direction_colour(s->then_direction), 0);
+        }
 
         if (s->mode == NAV_MODE_FULL) {
             char left[16], eta[8];
