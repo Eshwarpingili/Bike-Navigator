@@ -9,6 +9,7 @@
 #include "logbuf.h"
 #include "lvgl.h"
 #include "fonts.h"
+#include "wallpaper.h"
 #include "prefs.h"
 
 #define STALE_MS 8000
@@ -144,6 +145,8 @@ static void set_palette(bool light)
  * screen reads as a box with the edges knocked off, which is what made the old
  * screens look like a utility rather than an instrument. */
 #define CARD_RADIUS 18
+/* 86 % of 255. */
+#define GLASS_OPA 219
 
 /* Everything a press changes, eased together. Ease-out, because a control
  * should answer immediately and settle, not accelerate away from the finger. */
@@ -208,6 +211,10 @@ static struct {
     lv_obj_t *idle_clock;
     lv_obj_t *tile_set;    /* tap for brightness and volume */
     lv_obj_t *tile_set_val;
+    lv_obj_t *home_unit;   /* the "m" / "km" beside the distance */
+    lv_obj_t *home_onto;   /* the road being joined */
+    lv_obj_t *home_trip;   /* remaining, time left, arrival */
+    lv_obj_t *wallpaper;   /* the colour the glass cards sit on */
 
     lv_obj_t *music;       /* full screen: now playing, transport, volume */
     lv_obj_t *m_back;
@@ -242,13 +249,6 @@ static struct {
     lv_obj_t *log_label;   /* firmware log, the board's only console */
     unsigned drawn_log;
 
-    /* Identity strips. The route one is the exception that proves the rule: it
-     * carries the severity colour of the turn ahead, so the home screen says
-     * how hard the next manoeuvre is without being opened. */
-    lv_obj_t *strip_nav;
-    lv_obj_t *strip_media;
-    lv_obj_t *strip_clock;
-    lv_obj_t *strip_set;
     lv_obj_t *near_bar;    /* fills across the nav screen as the turn arrives */
 
     lv_obj_t *pressed;     /* the control a finger is on, lit until it leaves */
@@ -303,7 +303,11 @@ static lv_obj_t *card(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
     lv_obj_set_style_bg_color(o, g_pal.card, 0);
     lv_obj_set_style_bg_grad_color(o, g_pal.card_grad, 0);
     lv_obj_set_style_bg_grad_dir(o, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    /* Glass, at the opacity a moving vehicle can afford. A web glass panel
+     * sits around 12 % and lets the backdrop through; here the backdrop is
+     * allowed to TINT the card and nothing more, because the text on it has
+     * to survive direct sun. */
+    lv_obj_set_style_bg_opa(o, GLASS_OPA, 0);
     lv_obj_set_style_radius(o, CARD_RADIUS, 0);
     /* Pressed is set by hand - taps are hit-tested from coordinates, so LVGL
      * never sets the state itself - but the look between the two states is a
@@ -320,19 +324,6 @@ static lv_obj_t *card(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
     lv_obj_set_style_transition(o, &g_press_tr, 0);
     lv_obj_set_style_transition(o, &g_press_tr, LV_STATE_PRESSED);
     return o;
-}
-
-/* An identity strip along the top of a tile. Along the top rather than down the
- * left, where the turn arrow overhangs the tile's own edge by 20 px and would
- * sit on top of it. */
-static lv_obj_t *tile_strip(lv_obj_t *tile, lv_coord_t tile_w, lv_color_t col)
-{
-    lv_obj_t *e = box(tile, tile_w - 28, 3);
-    lv_obj_set_style_bg_color(e, col, 0);
-    lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(e, 2, 0);
-    lv_obj_align(e, LV_ALIGN_TOP_MID, 0, 5);
-    return e;
 }
 
 /* A card with one symbol centred in it, which is what every control here is.
@@ -617,12 +608,11 @@ static void apply_theme(void)
             lv_obj_set_style_border_width(on_card[i], 1, 0);
         }
     }
-    /* The identity strips. The route one is left alone: draw_home sets it from
-     * the turn ahead, and overwriting it here would blank it until the next
-     * instruction arrived. */
-    if (ui.strip_media) lv_obj_set_style_bg_color(ui.strip_media, g_pal.music, 0);
-    if (ui.strip_clock) lv_obj_set_style_bg_color(ui.strip_clock, g_pal.clock, 0);
-    if (ui.strip_set)   lv_obj_set_style_bg_color(ui.strip_set, g_pal.edge, 0);
+    /* The background the glass sits on. Without it the cards are translucent
+     * over a flat fill, which is just a paler card. */
+    if (ui.wallpaper) {
+        lv_img_set_src(ui.wallpaper, ui.drawn_light ? &wp_day : &wp_night);
+    }
     lv_obj_set_style_bg_color(ui.bar, g_pal.bar, 0);
     /* The call buttons follow the palette's green and red, and keep white
      * glyphs on both: the daytime green is dark enough that the ordinary text
@@ -750,81 +740,102 @@ void ui_init(const char *device_name)
     /* Home screen: four tiles. Route and music are the two things looked at
      * while moving, the clock is what gets glanced at at a light, and settings
      * is the one that can afford to be hunted for. Tapping a tile opens it. */
+    /* The dashboard. Four cards, four different sizes, because they hold four
+     * different amounts: the turn is what the screen is FOR, so it gets the
+     * area, and the clock gets what is left over. Equal tiles were the easy
+     * layout and they said everything here mattered equally, which is false.
+     *
+     *   +--------------------+-------+
+     *   |                    | music |   PANEL_W x BODY_H
+     *   |   the next turn    +-------+   COL_W x 76 / 54 / 42
+     *   |                    | clock |
+     *   |                    +-------+
+     *   +--------------------+ brite |
+     */
+    ui.wallpaper = lv_img_create(scr);
+    lv_obj_clear_flag(ui.wallpaper, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(ui.wallpaper, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_move_background(ui.wallpaper);
+
     ui.idle = box(scr, W, H - 26);
     lv_obj_align(ui.idle, LV_ALIGN_TOP_LEFT, 0, 26);
 
-    /* Gaps of MIN_GAP, so no two tiles' hit areas can reach each other. */
-    lv_coord_t tw = (W - 3 * MIN_GAP) / 2;
-    lv_coord_t th = (H - 26 - 3 * MIN_GAP) / 2;
-    lv_coord_t col2 = MIN_GAP + tw + MIN_GAP;
-    lv_coord_t row2 = MIN_GAP + th + MIN_GAP;
+    lv_coord_t body_h = H - 26 - 2 * MIN_GAP;
+    lv_coord_t panel_w = 170;
+    lv_coord_t col_w = W - panel_w - 3 * MIN_GAP;
+    lv_coord_t col_x = MIN_GAP + panel_w + MIN_GAP;
+    lv_coord_t h_media = 76, h_clock = 54;
+    lv_coord_t h_set = body_h - h_media - h_clock - 2 * MIN_GAP;
 
-    ui.tile_nav = card(ui.idle, tw, th);
+    ui.tile_nav = card(ui.idle, panel_w, body_h);
     lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, MIN_GAP, MIN_GAP);
-    /* Neutral until there is a route: an identity hue sitting beside an amber
-     * arrow would muddy the one channel that has to stay unambiguous. */
-    ui.strip_nav = tile_strip(ui.tile_nav, tw, g_pal.dim);
 
     ui.home_arrow = tinted_img(ui.tile_nav, COL_ACCENT);
-    lv_img_set_zoom(ui.home_arrow, 128); /* the nav-screen arrows at half size */
-    lv_obj_align(ui.home_arrow, LV_ALIGN_LEFT_MID, -20, -8);
+    lv_img_set_zoom(ui.home_arrow, 166);
+    lv_obj_align(ui.home_arrow, LV_ALIGN_TOP_LEFT, -24, -14);
 
-    ui.home_dist = label(ui.tile_nav, F_NUM, COL_TEXT);
-    lv_obj_align(ui.home_dist, LV_ALIGN_TOP_RIGHT, -8, 10);
+    ui.home_dist = label(ui.tile_nav, F_BIG, COL_TEXT);
+    lv_obj_align(ui.home_dist, LV_ALIGN_TOP_LEFT, 80, 18);
+    ui.home_unit = label(ui.tile_nav, F_BODY, COL_DIM);
 
-    ui.home_street = label(ui.tile_nav, F_BODY, COL_DIM);
-    lv_obj_set_width(ui.home_street, tw - 12);
-    lv_obj_set_style_text_align(ui.home_street, LV_TEXT_ALIGN_CENTER, 0);
+    ui.home_street = label(ui.tile_nav, F_TITLE, COL_TEXT);
+    lv_obj_set_width(ui.home_street, panel_w - 24);
     lv_label_set_long_mode(ui.home_street, LV_LABEL_LONG_DOT);
-    lv_obj_align(ui.home_street, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_align(ui.home_street, LV_ALIGN_TOP_LEFT, 12, 100);
+
+    ui.home_onto = label(ui.tile_nav, F_BODY, COL_DIM);
+    lv_obj_set_width(ui.home_onto, panel_w - 24);
+    lv_label_set_long_mode(ui.home_onto, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui.home_onto, LV_ALIGN_TOP_LEFT, 12, 126);
+
+    /* The trip, along the bottom of the panel it belongs to rather than in a
+     * bar of its own: it is about this route, not about the board. */
+    ui.home_trip = label(ui.tile_nav, F_SMALL, COL_DIM);
+    lv_obj_set_width(ui.home_trip, panel_w - 24);
+    lv_obj_align(ui.home_trip, LV_ALIGN_BOTTOM_LEFT, 12, -8);
 
     ui.home_none = label(ui.tile_nav, F_TITLE, COL_DIM);
     lv_label_set_text(ui.home_none, "No route");
     lv_obj_center(ui.home_none);
 
-    ui.tile_media = card(ui.idle, tw, th);
-    lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col2, MIN_GAP);
-    ui.strip_media = tile_strip(ui.tile_media, tw, COL_MUSIC);
+    ui.tile_media = card(ui.idle, col_w, h_media);
+    lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col_x, MIN_GAP);
 
-    /* The title leads this tile, so it carries the weight and the artist
+    /* The title leads this card, so it carries the weight and the artist
      * does not. Two lines of the same weight is a list, not a hierarchy. */
-    ui.track = label(ui.tile_media, F_BODY_B, COL_TEXT);
-    lv_obj_set_width(ui.track, tw - 12);
+    ui.track = label(ui.tile_media, F_BODY_B, COL_MUSIC);
+    lv_obj_set_width(ui.track, col_w - 12);
     lv_obj_set_style_text_align(ui.track, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.track, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_align(ui.track, LV_ALIGN_TOP_MID, 0, 14);
 
     ui.artist = label(ui.tile_media, F_BODY, COL_DIM);
-    lv_obj_set_width(ui.artist, tw - 12);
+    lv_obj_set_width(ui.artist, col_w - 12);
     lv_obj_set_style_text_align(ui.artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.artist, LV_LABEL_LONG_DOT);
-    lv_obj_align(ui.artist, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_align(ui.artist, LV_ALIGN_TOP_MID, 0, 38);
 
-    /* Short text only: the tile has no room for advice, and the diagnostics
+    /* Short text only: the card has no room for advice, and the diagnostics
      * screen already exists for that. */
     ui.idle_msg = label(ui.tile_media, F_BODY, COL_DIM);
-    lv_obj_set_width(ui.idle_msg, tw - 12);
+    lv_obj_set_width(ui.idle_msg, col_w - 12);
     lv_obj_set_style_text_align(ui.idle_msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.idle_msg, LV_LABEL_LONG_WRAP);
     lv_obj_center(ui.idle_msg);
 
-    /* The clock, big enough to read without looking for it. */
-    ui.tile_clock = card(ui.idle, tw, th);
-    lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, MIN_GAP, row2);
-    ui.strip_clock = tile_strip(ui.tile_clock, tw, COL_CLOCK);
-    ui.idle_clock = label(ui.tile_clock, F_BIG, COL_TEXT);
+    ui.tile_clock = card(ui.idle, col_w, h_clock);
+    lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, col_x, MIN_GAP + h_media + MIN_GAP);
+    ui.idle_clock = label(ui.tile_clock, F_NUM, COL_TEXT);
     lv_obj_center(ui.idle_clock);
-    /* Teal, not the accent blue: the accent means a slight turn, and this tile
-     * sits one row under the arrow that uses it. */
 
-    ui.tile_set = card(ui.idle, tw, th);
-    lv_obj_align(ui.tile_set, LV_ALIGN_TOP_LEFT, col2, row2);
-    ui.strip_set = tile_strip(ui.tile_set, tw, g_pal.edge);
-    lv_obj_t *set_icon = label(ui.tile_set, F_NUM, COL_DIM);
+    ui.tile_set = card(ui.idle, col_w, h_set);
+    lv_obj_align(ui.tile_set, LV_ALIGN_TOP_LEFT, col_x,
+                 MIN_GAP + h_media + MIN_GAP + h_clock + MIN_GAP);
+    lv_obj_t *set_icon = label(ui.tile_set, F_BODY, COL_DIM);
     lv_label_set_text(set_icon, LV_SYMBOL_SETTINGS);
-    lv_obj_align(set_icon, LV_ALIGN_CENTER, 0, -14);
-    ui.tile_set_val = label(ui.tile_set, F_BODY, COL_DIM);
-    lv_obj_align(ui.tile_set_val, LV_ALIGN_CENTER, 0, 22);
+    lv_obj_align(set_icon, LV_ALIGN_RIGHT_MID, -12, 0);
+    ui.tile_set_val = label(ui.tile_set, F_BODY_B, COL_DIM);
+    lv_obj_align(ui.tile_set_val, LV_ALIGN_LEFT_MID, 12, 0);
 
     /* Full-screen music: the same controls, big enough for a gloved thumb,
      * plus the phone's volume so it never has to come out of a pocket. */
@@ -1268,6 +1279,7 @@ static void draw_brightness(lv_obj_t *target)
 static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
 {
     set_text(ui.idle_clock, minute < 0 ? "--:--" : hhmm);
+    set_hidden(ui.wallpaper, false);
 
     bool music = s->music_valid;
 
@@ -1279,26 +1291,52 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
         lv_img_set_src(ui.home_arrow, home_img);
         lv_obj_set_style_img_recolor(ui.home_arrow, direction_colour(s->direction), 0);
     }
-    /* The route tile's strip is the turn's severity, so the home screen already
-     * says whether the next manoeuvre needs slowing for. Grey when there is no
-     * route: an idle tile has nothing to be amber about. */
-    if (ui.strip_nav) {
-        lv_obj_set_style_bg_color(ui.strip_nav,
-                                  has_route ? direction_colour(s->direction) : g_pal.dim, 0);
-    }
     set_hidden(ui.home_dist, !has_route);
+    set_hidden(ui.home_unit, !has_route);
     set_hidden(ui.home_street, !has_route);
+    set_hidden(ui.home_onto, !has_route);
+    set_hidden(ui.home_trip, !has_route);
     set_hidden(ui.home_none, has_route);
     if (has_route) {
-        char num[16];
+        char num[16], buf[48];
         const char *unit = "";
-        if (s->mode == NAV_MODE_BASIC) {
+        bool arrived = s->flags & NAV_FLAG_ARRIVED;
+        if (arrived) {
+            snprintf(num, sizeof(num), "Arrived");
+        } else if (s->mode == NAV_MODE_BASIC) {
             snprintf(num, sizeof(num), "%s", s->distance_text);
         } else {
             fmt_distance(s->distance_m, num, sizeof(num), &unit);
         }
-        lv_label_set_text_fmt(ui.home_dist, "%s%s", num, unit);
-        set_text(ui.home_street, s->street);
+        /* The number shrinks rather than running off the panel. "Arrived" and
+         * "1.2" need very different room, and a distance clipped by the card
+         * edge is worse than a smaller one that always fits. */
+        lv_obj_set_style_text_font(ui.home_dist, strlen(num) > 4 ? F_TITLE : F_BIG, 0);
+        set_text(ui.home_dist, num);
+        set_text(ui.home_unit, unit);
+        lv_obj_update_layout(ui.home_dist);
+        lv_obj_align_to(ui.home_unit, ui.home_dist, LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -6);
+
+        set_text(ui.home_street, s->flags & NAV_FLAG_REROUTING ? "Rerouting..." : s->street);
+        set_text(ui.home_onto, s->then_direction != DIR_NONE ? "then" : "");
+
+        if (s->mode == NAV_MODE_FULL) {
+            char left[16], eta[8];
+            fmt_remaining(s->remaining_m, left, sizeof(left));
+            int at = s->minutes_left == NAV_UNKNOWN_U16
+                         ? -1
+                         : local_minute_of_day(s, ui.now_ms, (uint32_t)s->minutes_left * 60);
+            fmt_hhmm(at, eta, sizeof(eta));
+            if (s->minutes_left == NAV_UNKNOWN_U16) {
+                snprintf(buf, sizeof(buf), "%s", left);
+            } else {
+                snprintf(buf, sizeof(buf), "%s  %u min  %s", left,
+                         (unsigned)s->minutes_left, eta);
+            }
+            set_text(ui.home_trip, buf);
+        } else {
+            set_text(ui.home_trip, "");
+        }
     }
 
     set_hidden(ui.track, !music);

@@ -20,11 +20,30 @@ OUT_PREVIEW = HERE / "arrows_preview.png"
 
 SIZES = {"big": 132, "small": 40}
 SS = 4  # supersampling factor
-DIM = 0.32  # alpha of the "other way" parts (ring, untaken branch)
+PHI = (1 + 5 ** 0.5) / 2  # 1.6180339887...
 
-STROKE = 0.19  # stroke width, in path units (paths span roughly 1.0)
-HEAD_LEN = 0.36
-HEAD_HALF = 0.26
+# Every proportion in the arrowhead comes off one chain:
+#
+#     stroke : head half-width : head length  =  1 : phi : phi^2
+#
+# The head is therefore phi times wider than the shaft on each side and phi
+# again longer than it is half-wide, which is the shape the eye reads as
+# "pointing" rather than "a triangle stuck on a line". Picked as a ratio
+# rather than a golden TRIANGLE: a true 36-degree golden gnomon comes to a
+# spike too fine to survive 4 bpp antialiasing at 40 px, and the 108-degree
+# one is so blunt it reads as a chevron.
+STROKE = 0.18             # stroke width, in path units (paths span roughly 1.0)
+HEAD_HALF = STROKE * PHI  # 0.2913
+HEAD_LEN = HEAD_HALF * PHI  # 0.4713
+
+# The dim parts - the ring behind a roundabout, the branch not taken - sit at
+# 1/phi^2 of full. Far enough back to read as context, present enough to say
+# what the junction is.
+DIM = 1 / PHI ** 2  # 0.382
+
+# A head needs a straight run to sit on, or it is built from the last sliver
+# of an arc and comes out a lump. One head length, scaled by 1/phi.
+TANGENT = HEAD_LEN / PHI  # 0.2913
 
 
 class Shape:
@@ -123,11 +142,16 @@ def turn(angle: float) -> Shape:
     """Stem going up, then a bend of `angle` degrees (negative = left)."""
     s = Shape()
     hx, hy = heading(angle)
-    if abs(angle) > 100:  # sharp: bend high up so the arrow clears the stem
-        pivot, leg, stem = (0.0, -0.45), 1.05, 0.9
+    if abs(angle) > 100:
+        # A sharp turn doubles back past its own stem, and a head phi times
+        # wider than the shaft now clips it on the way. Step the stem across
+        # to the far side so the head has clear air to swing through; render()
+        # recentres on the bounding box afterwards, so nothing looks off-axis.
+        off = -(1.0 if angle > 0 else -1.0) * 0.22
+        pivot, leg, stem = (off, -0.52), 1.16, 0.78
     else:
         pivot, leg, stem = (0.0, 0.0), 0.95, 1.0 if abs(angle) < 60 else 0.85
-    s.arrow([(0.0, stem), pivot, (pivot[0] + hx * leg, pivot[1] + hy * leg)])
+    s.arrow([(pivot[0], stem), pivot, (pivot[0] + hx * leg, pivot[1] + hy * leg)])
     return s
 
 
@@ -140,7 +164,7 @@ def straight() -> Shape:
 def uturn(left: bool) -> Shape:
     s = Shape()
     sign = -1 if left else 1
-    r = 0.36
+    r = STROKE * PHI ** 1.5  # 0.37, the width the loop had before
     cx = sign * r
     arc = [(cx - sign * r * math.cos(math.radians(t)), -r * math.sin(math.radians(t)) - 0.1)
            for t in range(0, 181, 10)]
@@ -172,7 +196,7 @@ def bend(angle: float) -> Shape:
     s = Shape()
     total = math.radians(min(abs(angle), 150))
     sign = 1.0 if angle > 0 else -1.0
-    radius = 1.15 / max(total, 0.35)
+    radius = PHI ** 0.5 / max(total, 0.35)
     arc = [(0.0, 0.0)]
     steps = 24
     for i in range(1, steps + 1):
@@ -182,7 +206,7 @@ def bend(angle: float) -> Shape:
     # sit on. Taken off the last sliver of arc it comes out as a lump instead of
     # a triangle, which is what the first attempt did.
     hx, hy = sign * math.sin(total), -math.cos(total)
-    arc.append((arc[-1][0] + hx * 0.42, arc[-1][1] + hy * 0.42))
+    arc.append((arc[-1][0] + hx * TANGENT * PHI, arc[-1][1] + hy * TANGENT * PHI))
     s.arrow([(0.0, 0.5)] + arc)
     return s
 
@@ -192,7 +216,7 @@ def grade(over: bool) -> Shape:
     the road that passes underneath is the one drawn with a gap in it. So an
     unbroken arrow means you are the one on top."""
     s = Shape()
-    dim_w = STROKE * 0.8
+    dim_w = STROKE / PHI
     if over:
         s.stroke([(-0.95, 0.0), (-0.24, 0.0)], alpha=DIM, width=dim_w)
         s.stroke([(0.24, 0.0), (0.95, 0.0)], alpha=DIM, width=dim_w)

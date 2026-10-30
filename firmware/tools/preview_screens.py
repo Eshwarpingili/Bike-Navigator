@@ -34,13 +34,13 @@ NEAR_FROM_M = 400
 DARK = dict(
     bg=0x0C1017, bg_grad=0x000000, card=0x1E242E, card_grad=0x141922,
     text=0xFFFFFF, dim=0xAAB3BF, accent=0x5AB0FF, warn=0xFFB300, good=0x3DDC84,
-    bar=0x151A22, edge=0x2C333F, music=0xA78BFA, map=0x2DD4BF,
+    bar=0x151A22, edge=0x2C333F, music=0xA78BFA, clock=0x2DD4BF,
     press=0x2A313C, press_grad=0x222833,
 )
 LIGHT = dict(
     bg=0xE7ECF2, bg_grad=0xD5DDE7, card=0xFFFFFF, card_grad=0xF1F4F9,
     text=0x000000, dim=0x333C47, accent=0x1D4ED8, warn=0xB45309, good=0x047857,
-    bar=0xC2CBD6, edge=0x7C8A9A, music=0x5B21B6, map=0x115E59,
+    bar=0xC2CBD6, edge=0x7C8A9A, music=0x5B21B6, clock=0x115E59,
     press=0xE6ECF2, press_grad=0xDAE1EA,
 )
 RED = 0xE53935
@@ -98,10 +98,34 @@ def vgrad(size, top, bottom):
     return g.resize((w, h))
 
 
+SS = 4  # supersample factor
+
+
 def rounded_mask(size, radius):
-    m = Image.new("L", size, 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, size[0] - 1, size[1] - 1], radius, fill=255)
-    return m
+    """Anti-aliased, because LVGL's corners are. LVGL 8.3 draws a rounded rect
+    through lv_draw_mask_radius, which is a coverage mask with soft edges when
+    LV_DRAW_COMPLEX is on - it is. PIL's rounded_rectangle has hard edges, so
+    an un-supersampled mock invents jagged corners the board never shows."""
+    big = (size[0] * SS, size[1] * SS)
+    m = Image.new("L", big, 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, big[0] - 1, big[1] - 1],
+                                        radius * SS, fill=255)
+    return m.resize(size, Image.LANCZOS)
+
+
+def outline(img, box, radius, colour, alpha):
+    """A soft 1 px rim, drawn as the difference between two masks so it is as
+    smooth as the corner it follows."""
+    x0, y0, x1, y1 = [int(v) for v in box]
+    size = (x1 - x0, y1 - y0)
+    outer = rounded_mask(size, radius)
+    inner = Image.new("L", size, 0)
+    ImageDraw.Draw(inner).rounded_rectangle([1, 1, size[0] - 2, size[1] - 2],
+                                            max(0, radius - 1), fill=255)
+    ring = Image.new("L", size)
+    ring.putdata([max(0, o - i) * alpha // 255
+                  for o, i in zip(outer.getdata(), inner.getdata())])
+    img.paste(Image.new("RGB", size, colour), (x0, y0), ring)
 
 
 def card(img, p, box, radius=RADIUS, pressed=False):
@@ -110,8 +134,7 @@ def card(img, p, box, radius=RADIUS, pressed=False):
     top = p["press"] if pressed else p["card"]
     bot = p["press_grad"] if pressed else p["card_grad"]
     img.paste(vgrad(size, top, bot), (x0, y0), rounded_mask(size, radius))
-    ImageDraw.Draw(img).rounded_rectangle([x0, y0, x1 - 1, y1 - 1], radius,
-                                          outline=rgb(p["edge"]), width=1)
+    outline(img, (x0, y0, x1, y1), radius, rgb(p["edge"]), 255)
 
 
 def centre(d, box, text, f, fill):
@@ -170,7 +193,7 @@ def home(p, route_colour, code=25, pressed=None, no_route=False):
         ("nav", [MIN_GAP, BAR_H + MIN_GAP, MIN_GAP + tw, BAR_H + MIN_GAP + th],
          p["dim"] if no_route else route_colour),
         ("media", [col2, BAR_H + MIN_GAP, col2 + tw, BAR_H + MIN_GAP + th], p["music"]),
-        ("clock", [MIN_GAP, row2, MIN_GAP + tw, row2 + th], p["map"]),
+        ("clock", [MIN_GAP, row2, MIN_GAP + tw, row2 + th], p["clock"]),
         ("set", [col2, row2, col2 + tw, row2 + th], p["edge"]),
     ]
     for name, box, col in tiles:
@@ -195,7 +218,7 @@ def home(p, route_colour, code=25, pressed=None, no_route=False):
         elif name == "clock":
             centre(d, [x0, y0 + 6, x1, y1], "21:14" if no_route else "Map",
                    font(40 if no_route else 19, True),
-                   rgb(p["text"] if no_route else p["map"]))
+                   rgb(p["text"] if no_route else p["clock"]))
         else:
             # The board gets this glyph from Montserrat, which every Inter face
             # falls back to per glyph. The mock has no fallback, so it asks a
