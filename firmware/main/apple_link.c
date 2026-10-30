@@ -68,7 +68,8 @@ enum step {
     STEP_CCC_NOTIF,  /* ANCS Notification Source */
     STEP_CCC_DATA,   /* ANCS Data Source */
     STEP_SUBSCRIBE,
-    STEP_WRITE_PLAYER,  /* ask for play/pause state */
+    STEP_CLEAR_PLAYER,  /* same reason as the track: re-adding is what resends */
+    STEP_WRITE_PLAYER,  /* ask for play/pause state and volume */
     STEP_CLEAR_TRACK,   /* drop the track registration, so re-adding it resends */
     STEP_WRITE_TRACK,   /* ask for artist + title */
     STEP_READ_TIME,
@@ -119,6 +120,8 @@ static bool g_have_title;
 static uint16_t g_remote_ccc;
 static uint8_t g_ccc_err = 0xFF;      /* phone's answer to enabling notifications */
 static uint8_t g_sec_level;
+static uint8_t g_fail_step = 0xFF;    /* the step that last failed outright */
+static int8_t g_fail_err;
 
 static void publish_status(void)
 {
@@ -127,6 +130,7 @@ static void publish_status(void)
     nav_state_set_apple_debug(g_entity_handle, g_entity_ccc, g_write_err, g_notif_count, g_sub_lost,
                               g_ccc_err, g_sec_level);
     nav_state_set_ancs(g_notif_handle != 0, g_calls_seen);
+    nav_state_set_apple_chain(g_rounds, g_fail_step, g_fail_err, g_have_title);
 }
 
 static void next_step(enum step step)
@@ -535,7 +539,9 @@ static void on_write_done(struct bt_conn *conn, uint8_t err, struct bt_gatt_writ
     if (err) {
         logbuf_add("entity write err=%02x", err);
     }
-    if (g_step == STEP_WRITE_PLAYER) {
+    if (g_step == STEP_CLEAR_PLAYER) {
+        next_step(STEP_WRITE_PLAYER);
+    } else if (g_step == STEP_WRITE_PLAYER) {
         next_step(STEP_CLEAR_TRACK);
     } else if (g_step == STEP_CLEAR_TRACK) {
         next_step(STEP_WRITE_TRACK);
@@ -580,12 +586,13 @@ static int start_discovery(bt_gatt_discover_func_t func, uint8_t type, uint16_t 
     return bt_gatt_discover(g_conn, &g_discover);
 }
 
-/* The descriptor we confirmed by writing, or the one the properties point at. */
-static void subscribe(struct bt_gatt_subscribe_params *params, uint16_t value_handle,
+/* The descriptor we confirmed by writing, or the one the properties point at.
+ * Returns whether the stack really took the subscription. */
+static bool subscribe(struct bt_gatt_subscribe_params *params, uint16_t value_handle,
                       uint16_t ccc_handle, uint8_t props, bt_gatt_notify_func_t notify)
 {
     if (value_handle == 0) {
-        return;
+        return false;
     }
     params->notify = notify;
     params->value_handle = value_handle;
@@ -593,8 +600,15 @@ static void subscribe(struct bt_gatt_subscribe_params *params, uint16_t value_ha
     params->value = BT_GATT_CCC_NOTIFY;
     int err = bt_gatt_subscribe(g_conn, params);
     if (err && err != -EALREADY) {
+        /* The stack returns before linking these params into its subscription
+         * list, so the handle left behind here would claim a subscription that
+         * does not exist: nothing ever arrives while the board believes it is
+         * listening. Clear it, so the tick knows to try again. */
+        params->value_handle = 0;
         logbuf_add("[apple] subscribe %u failed: %d", value_handle, err);
+        return false;
     }
+    return true;
 }
 
 static const uint8_t g_track_request[] = { ENTITY_TRACK, TRACK_ATTR_ARTIST, TRACK_ATTR_TITLE };
@@ -605,8 +619,13 @@ static const uint8_t g_player_request[] = { ENTITY_PLAYER, PLAYER_ATTR_PLAYBACK_
 /* An entity on its own, with no attributes, cancels that entity's registration.
  * The phone keeps registrations across reconnects, and only sends an attribute
  * when it changes, so re-registering unchanged leaves the screen blank until
- * the next song. Cancelling first makes the re-registration new again. */
+ * the next song. Cancelling first makes the re-registration new again.
+ *
+ * The player needs the same treatment as the track. Without it, play state and
+ * volume are whatever they were when the phone last changed them, which after
+ * a reconnect means a pause button for a song that is playing. */
 static const uint8_t g_track_clear[] = { ENTITY_TRACK };
+static const uint8_t g_player_clear[] = { ENTITY_PLAYER };
 
 /* The Entity Update characteristic takes a write WITH response; a write command
  * is dropped silently, which is why nothing ever arrived. */
@@ -637,17 +656,23 @@ static struct bt_gatt_subscribe_params g_sub_remote;
 static void do_subscribe_step(void)
 {
     subscribe(&g_sub_remote, g_remote_handle, g_remote_ccc, g_remote_props, on_remote_update);
-    subscribe(&g_sub_media, g_entity_handle, g_entity_ccc, g_entity_props, on_media_update);
+    /* Media is the one that matters: without it there is no song name, no play
+     * state and no volume, so its result is what the board reports. */
+    bool media = subscribe(&g_sub_media, g_entity_handle, g_entity_ccc, g_entity_props,
+                           on_media_update);
     subscribe(&g_sub_time, g_time_handle, g_time_ccc, g_time_props, on_time_update);
     /* Data Source first: the phone can answer a request the instant it is made,
      * so be listening before anything is asked for. */
     subscribe(&g_sub_data, g_data_handle, g_data_ccc, g_data_props, on_data_source);
     subscribe(&g_sub_notif, g_notif_handle, g_notif_ccc, g_notif_props, on_notif_source);
-    g_subscribed = g_sub_media.value_handle != 0;
+    g_subscribed = media;
+    if (media) {
+        g_sub_lost = false; /* a fresh subscription: stop asking for another */
+    }
     publish_status();
     logbuf_add("subscribed media=%u clock=%u calls=%u", g_entity_handle, g_time_handle,
                g_notif_handle);
-    next_step(g_entity_handle ? STEP_WRITE_PLAYER : STEP_READ_TIME);
+    next_step(g_entity_handle ? STEP_CLEAR_PLAYER : STEP_READ_TIME);
 }
 
 /* ---------------- the notification control point ---------------- */
@@ -756,6 +781,15 @@ void apple_link_tick(uint32_t now_ms)
             g_last_step_ms = now_ms; /* start the idle clock, or every tick looks overdue */
             return;
         }
+        /* The media subscription never took, or the phone dropped it. Neither
+         * check below catches this once a title has arrived, so a dropped
+         * subscription used to stay dead until the next disconnect - which the
+         * rider sees as a song name that works and then stops. */
+        if (g_entity_handle && (g_sub_lost || !g_subscribed) &&
+            now_ms - g_last_step_ms > 10000) {
+            next_step(STEP_SUBSCRIBE); /* and the registrations again behind it */
+            return;
+        }
         /* Registered, but no track has ever arrived: ask again. The phone sends
          * a track only when it has one, so a registration made while nothing was
          * playing needs repeating. */
@@ -845,6 +879,9 @@ void apple_link_tick(uint32_t now_ms)
         case STEP_WRITE_TRACK:
             err = write_entity_request(g_track_request, sizeof(g_track_request));
             break;
+        case STEP_CLEAR_PLAYER:
+            err = write_entity_request(g_player_clear, sizeof(g_player_clear));
+            break;
         case STEP_WRITE_PLAYER:
             err = write_entity_request(g_player_request, sizeof(g_player_request));
             break;
@@ -871,9 +908,23 @@ void apple_link_tick(uint32_t now_ms)
     }
     if (err) {
         logbuf_add("[apple] step %d failed: %d", (int)g_step, err);
+        g_fail_step = (uint8_t)g_step;   /* named on the settings screen */
+        g_fail_err = (int8_t)err;
+        publish_status();
         g_busy = false;          /* try the same step again on the next tick */
         if (err != -EINPROGRESS) {
-            g_step = STEP_DONE;  /* hard failure: fall into the retry path */
+            /* The clock and the notification service are both optional, and
+             * media is subscribed AFTER them. Giving up here stranded the one
+             * thing the rider always wants behind two they can live without:
+             * no song name, and a board re-probing forever. These steps walk
+             * forward to the subscribe instead of abandoning the chain. */
+            switch (g_step) {
+                case STEP_CTS_CHARS:  next_step(step_after_cts()); break;
+                case STEP_ANCS_CHARS: next_step(STEP_SUBSCRIBE);   break;
+                case STEP_CCC_NOTIF:  next_step(STEP_CCC_DATA);    break;
+                case STEP_CCC_DATA:   next_step(STEP_SUBSCRIBE);   break;
+                default:              g_step = STEP_DONE; break; /* retry path */
+            }
         }
     }
 }
@@ -912,6 +963,9 @@ void apple_link_on_connect(struct bt_conn *conn)
     g_remote_ccc = 0;
     g_ccc_err = 0xFF;
     g_sec_level = 0;
+    g_fail_step = 0xFF;
+    g_fail_err = 0;
+    g_subscribed = false;
     /* The subscribe params are not cleared here: for a bonded peer the stack
      * keeps them in its own list across a disconnect, and zeroing one unlinks
      * everything behind it. */

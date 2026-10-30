@@ -693,14 +693,18 @@ void ui_init(const char *device_name)
     ui.s_vol_up = button(ui.settings, 72, 52, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_28);
     lv_obj_align(ui.s_vol_up, LV_ALIGN_TOP_RIGHT, -12, 116);
 
-    ui.s_auto = button(ui.settings, 150, 30, "Auto", &lv_font_montserrat_16);
+    /* Narrowed to leave the bottom-right corner for the readout below, which
+     * needs three lines now and used to run off the bottom of the screen. */
+    ui.s_auto = button(ui.settings, 110, 30, "Auto", &lv_font_montserrat_16);
     lv_obj_align(ui.s_auto, LV_ALIGN_TOP_LEFT, 12, 182);
 
-    /* What the touch panel actually reported, and what the backlight is
-     * actually set to. The board has no other way to say either, and guessing
-     * at them has cost enough. */
-    ui.s_tap = label(ui.settings, &lv_font_montserrat_16, COL_DIM);
-    lv_obj_align(ui.s_tap, LV_ALIGN_TOP_RIGHT, -12, 188);
+    /* What the touch panel actually reported, what the backlight is actually
+     * set to, and whether the phone is really feeding calls and music. The
+     * board has no other way to say any of it, and guessing has cost enough.
+     * Small type on purpose: it is for diagnosing, not for riding. */
+    ui.s_tap = label(ui.settings, &lv_font_montserrat_12, COL_DIM);
+    lv_obj_set_style_text_align(ui.s_tap, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(ui.s_tap, LV_ALIGN_TOP_RIGHT, -12, 168);
 
     /* The route ahead. The phone sends it already turned so that forward is up
      * and measured from where the rider is, so there is no trigonometry here -
@@ -1179,6 +1183,24 @@ static void draw_map(const nav_state_t *s)
     }
 }
 
+/* One word for why there is no song name. Each one points at a different
+ * fault, because they have all looked identical on the screen until now:
+ *   none    - the phone never offered the media service at all
+ *   lost    - it offered it, then cancelled the subscription
+ *   nosub   - the subscription was refused, so nothing can arrive
+ *   quiet   - subscribed, and the phone has never sent anything
+ *   notrack - the player answers, but no title has ever come
+ *   ok      - a title has arrived */
+static const char *music_state_word(const nav_state_t *s)
+{
+    if (!s->apple_media)      return "none";
+    if (s->apple_sub_lost)    return "lost";
+    if (!s->apple_subscribed) return "nosub";
+    if (s->apple_notifs == 0) return "quiet";
+    if (!s->apple_have_title) return "notrack";
+    return "ok";
+}
+
 static void draw_music(const nav_state_t *s)
 {
     draw_volume(ui.m_vol_val, s);
@@ -1514,11 +1536,13 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
              * it did and has sent nothing, which on iOS means the per-device
              * notification consent was never given. Those need different
              * answers, so they are shown differently. */
-            lv_label_set_text_fmt(ui.s_tap, "tap %d,%d d%u\ncalls: %s",
+            lv_label_set_text_fmt(ui.s_tap, "tap %d,%d d%u\ncalls: %s\nmusic: %s r%u f%u/%d",
                                   (int)ui.last_x, (int)ui.last_y,
                                   (unsigned)backlight_duty(),
-                                  !s->apple_ancs ? "no service"
-                                                 : (s->apple_calls ? "working" : "silent"));
+                                  !s->apple_ancs ? "none"
+                                                 : (s->apple_calls ? "ok" : "quiet"),
+                                  music_state_word(s), (unsigned)s->apple_rounds,
+                                  (unsigned)s->apple_fail_step, (int)s->apple_fail_err);
             break;
         case SCR_HOME:
         default:

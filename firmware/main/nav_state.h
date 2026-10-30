@@ -91,6 +91,14 @@ typedef struct {
     uint16_t apple_calls;
     uint8_t apple_ccc_err;  /* phone's answer to enabling notifications */
     uint8_t apple_sec;      /* link security level */
+    /* Why the music chain is not working. A rising apple_rounds means discovery
+     * keeps aborting and starting over; apple_fail_step names the step that
+     * failed. Both are on the settings screen, because the song name going
+     * missing has looked identical to four different faults. */
+    uint8_t apple_rounds;
+    uint8_t apple_fail_step; /* 0xFF = nothing has failed */
+    int8_t apple_fail_err;
+    bool apple_have_title;   /* the phone has sent a title at least once */
 
     /* x is right of the way ahead, y is forward, both in route_unit_m metres. */
     int8_t route_x[NAV_ROUTE_MAX];
@@ -140,6 +148,10 @@ void nav_state_set_apple_debug(uint16_t entity, uint16_t ccc, uint8_t write_err,
 
 /* Notification service state, for telling a missing service from a muted one. */
 void nav_state_set_ancs(bool found, uint16_t calls);
+
+/* How the music chain is getting on, in the few numbers that identify a fault. */
+void nav_state_set_apple_chain(uint8_t rounds, uint8_t fail_step, int8_t fail_err,
+                               bool have_title);
 
 /* Copy the current state out (thread safe). */
 void nav_state_snapshot(nav_state_t *out);

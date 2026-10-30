@@ -59,6 +59,7 @@ void nav_state_init(void)
     g_state.remaining_m = NAV_UNKNOWN_U32;
     g_state.minutes_left = NAV_UNKNOWN_U16;
     g_state.speed_kmh = NAV_UNKNOWN_U8;
+    g_state.apple_fail_step = 0xFF; /* zero would read as a step that failed */
     g_lock = xSemaphoreCreateMutex();
 }
 
@@ -253,6 +254,21 @@ void nav_state_set_ancs(bool found, uint16_t calls)
     if (g_state.apple_ancs != found || g_state.apple_calls != calls) {
         g_state.apple_ancs = found;
         g_state.apple_calls = calls;
+        g_state.version++;
+    }
+    xSemaphoreGive(g_lock);
+}
+
+void nav_state_set_apple_chain(uint8_t rounds, uint8_t fail_step, int8_t fail_err,
+                               bool have_title)
+{
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (g_state.apple_rounds != rounds || g_state.apple_fail_step != fail_step ||
+        g_state.apple_fail_err != fail_err || g_state.apple_have_title != have_title) {
+        g_state.apple_rounds = rounds;
+        g_state.apple_fail_step = fail_step;
+        g_state.apple_fail_err = fail_err;
+        g_state.apple_have_title = have_title;
         g_state.version++;
     }
     xSemaphoreGive(g_lock);
