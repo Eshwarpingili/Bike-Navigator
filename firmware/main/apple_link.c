@@ -4,6 +4,9 @@
 #include <string.h>
 #include <sys/errno.h>
 
+#include <FreeRTOS.h>
+#include <queue.h>
+
 #include "bluetooth.h"
 #include "conn.h"
 #include "gatt.h"
@@ -121,6 +124,12 @@ static uint16_t g_remote_ccc;
 static uint8_t g_ccc_err = 0xFF;      /* phone's answer to enabling notifications */
 static uint8_t g_sec_level;
 static uint8_t g_fail_step = 0xFF;    /* the step that last failed outright */
+static bool g_trunc;                  /* AMS cut the last title to fit the MTU */
+static QueueHandle_t g_media_q;       /* taps in, from the LVGL task */
+static struct bt_gatt_write_params g_cmd_write;
+static uint8_t g_cmd;
+static volatile bool g_cmd_busy;      /* a media write is waiting for its reply */
+static bool service_media_queue(void);
 static int8_t g_fail_err;
 
 static void publish_status(void)
@@ -130,7 +139,7 @@ static void publish_status(void)
     nav_state_set_apple_debug(g_entity_handle, g_entity_ccc, g_write_err, g_notif_count, g_sub_lost,
                               g_ccc_err, g_sec_level);
     nav_state_set_ancs(g_notif_handle != 0, g_calls_seen);
-    nav_state_set_apple_chain(g_rounds, g_fail_step, g_fail_err, g_have_title);
+    nav_state_set_apple_chain(g_rounds, g_fail_step, g_fail_err, g_have_title, g_trunc);
 }
 
 static void next_step(enum step step)
@@ -190,6 +199,11 @@ static uint8_t on_media_update(struct bt_conn *conn, struct bt_gatt_subscribe_pa
     uint16_t value_len = length - 3;
 
     if (d[0] == ENTITY_TRACK && d[1] == TRACK_ATTR_TITLE) {
+        /* Bit 0 of the flags byte is AMS saying it cut the value to fit the
+         * link's MTU. Worth knowing on sight: a short title on screen means
+         * either this, or a buffer here that is too small, and the two want
+         * completely different fixes. */
+        g_trunc = (d[2] & 0x01) != 0;
         nav_state_set_music_text(true, value, value_len);
         if (value_len > 0) {
             g_have_title = true;
@@ -931,8 +945,20 @@ void apple_link_tick(uint32_t now_ms)
 
 /* ---------------- connection hooks ---------------- */
 
+/* Drains the media queue. Called far more often than apple_link_tick, which
+ * stays on its once-a-second cadence on purpose: that gap is the margin that
+ * keeps this stack from refusing a discovery that is still finishing. Volume
+ * cannot wait a second to answer a thumb, and discovery must not be hurried. */
+void apple_link_service(void)
+{
+    (void)service_media_queue();
+}
+
 void apple_link_on_connect(struct bt_conn *conn)
 {
+    if (g_media_q == NULL) {
+        g_media_q = xQueueCreate(4, 1);
+    }
     g_conn = conn;
     g_step = STEP_DONE;
     g_busy = false;
@@ -966,6 +992,13 @@ void apple_link_on_connect(struct bt_conn *conn)
     g_fail_step = 0xFF;
     g_fail_err = 0;
     g_subscribed = false;
+    g_trunc = false;
+    g_cmd_busy = false;
+    if (g_media_q != NULL) {
+        /* Taps aimed at a link that has gone must not be delivered to the next
+         * one: the rider pressed next on a song that is no longer playing. */
+        xQueueReset(g_media_q);
+    }
     /* The subscribe params are not cleared here: for a bonded peer the stack
      * keeps them in its own list across a disconnect, and zeroing one unlinks
      * everything behind it. */
@@ -1018,30 +1051,62 @@ static void on_command_written(struct bt_conn *conn, uint8_t err, struct bt_gatt
 {
     (void)conn;
     (void)params;
+    g_cmd_busy = false;
     if (err) {
         logbuf_add("cmd err=%02x", err);
     }
 }
 
+/* Taps arrive on the LVGL task; every other GATT request on this link is made
+ * from the BLE task. Issuing the write straight from the tap meant memsetting
+ * a static params block, and overwriting the single static command byte, while
+ * the stack might still be holding both from the previous tap - two tasks,
+ * one buffer, no lock. Four rapid volume taps was all it took.
+ *
+ * So the tap only posts. The BLE task drains this queue, one write at a time,
+ * and will not start another until the stack has answered for the last.
+ *
+ * A queue rather than one pending slot because volume is stepped: holding the
+ * button is meant to send several, and dropping all but the newest would make
+ * it feel broken. Four deep is enough for a burst and small enough that a
+ * stalled link cannot bank a stale minute of taps. */
 void apple_link_media_command(uint8_t command)
 {
-    if (g_conn == NULL || g_remote_handle == 0) {
+    if (g_media_q == NULL) {
         return;
     }
-    static uint8_t cmd;
-    cmd = command;
+    (void)xQueueSend(g_media_q, &command, 0); /* never block the UI task */
+}
+
+/* Called from the BLE task only. Returns true if it issued a write, so the
+ * caller knows one is now in flight. */
+static bool service_media_queue(void)
+{
+    uint8_t command;
+
+    if (g_conn == NULL || g_remote_handle == 0 || g_media_q == NULL || g_cmd_busy) {
+        return false;
+    }
+    if (xQueueReceive(g_media_q, &command, 0) != pdTRUE) {
+        return false;
+    }
+    g_cmd = command;
     if (g_remote_props & BT_GATT_CHRC_WRITE_WITHOUT_RESP) {
-        bt_gatt_write_without_response(g_conn, g_remote_handle, &cmd, 1, false);
-        return;
+        /* Nothing comes back, so nothing is in flight to wait for. */
+        bt_gatt_write_without_response(g_conn, g_remote_handle, &g_cmd, 1, false);
+        return true;
     }
     /* Remote Command is write-with-response here (properties 0x98), and this
      * stack calls params->func unconditionally when the reply lands, so the
      * callback is required rather than optional. */
-    static struct bt_gatt_write_params params;
-    memset(&params, 0, sizeof(params));
-    params.func = on_command_written;
-    params.handle = g_remote_handle;
-    params.data = &cmd;
-    params.length = 1;
-    bt_gatt_write(g_conn, &params);
+    memset(&g_cmd_write, 0, sizeof(g_cmd_write));
+    g_cmd_write.func = on_command_written;
+    g_cmd_write.handle = g_remote_handle;
+    g_cmd_write.data = &g_cmd;
+    g_cmd_write.length = 1;
+    g_cmd_busy = true;
+    if (bt_gatt_write(g_conn, &g_cmd_write) != 0) {
+        g_cmd_busy = false;
+    }
+    return true;
 }

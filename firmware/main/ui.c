@@ -520,6 +520,36 @@ static void glide_width(lv_obj_t *o, lv_coord_t to)
     lv_anim_start(&a);
 }
 
+
+/* Setting a label to the text it already holds still invalidates it and
+ * reallocates its buffer; setting a colour it already has invalidates it too.
+ * Across every label on the screen, ten times a second, that is a lot of heap
+ * churn and a lot of SPI traffic to redraw something identical. LVGL does keep
+ * a scrolling label's position across a set_text, so this is about cost rather
+ * than correctness - but on a 48 KB heap the cost is the point. */
+static void set_text(lv_obj_t *o, const char *txt)
+{
+    if (o == NULL || txt == NULL) {
+        return;
+    }
+    const char *cur = lv_label_get_text(o);
+    if (cur != NULL && strcmp(cur, txt) == 0) {
+        return;
+    }
+    lv_label_set_text(o, txt);
+}
+
+static void set_text_colour(lv_obj_t *o, lv_color_t c)
+{
+    if (o == NULL) {
+        return;
+    }
+    if (lv_obj_get_style_text_color(o, LV_PART_MAIN).full == c.full) {
+        return;
+    }
+    lv_obj_set_style_text_color(o, c, 0);
+}
+
 static void check_spacing(const char *screen, lv_obj_t **controls, int count)
 {
     for (int i = 0; i < count; i++) {
@@ -1294,10 +1324,10 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
         fmt_distance(s->distance_m, num, sizeof(num), &unit);
     }
     lv_obj_set_style_text_font(ui.dist_num, strlen(num) > 5 ? F_TITLE : F_BIG, 0);
-    lv_label_set_text(ui.dist_num, num);
-    lv_obj_set_style_text_color(ui.dist_num, main_col, 0);
-    lv_label_set_text(ui.dist_unit, unit);
-    lv_obj_set_style_text_color(ui.dist_unit, main_col, 0);
+    set_text(ui.dist_num, num);
+    set_text_colour(ui.dist_num, main_col);
+    set_text(ui.dist_unit, unit);
+    set_text_colour(ui.dist_unit, main_col);
     lv_obj_update_layout(ui.dist_num); /* align_to needs the new text width */
     lv_obj_align_to(ui.dist_unit, ui.dist_num, LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -8);
 
@@ -1305,8 +1335,8 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
      * amber text beside a red arrow was two different severities for one
      * event. Keeping the severity colours off text also lets them be chosen
      * purely for how they read as a large glyph. */
-    lv_label_set_text(ui.street, rerouting ? "Rerouting..." : s->street);
-    lv_obj_set_style_text_color(ui.street, main_col, 0);
+    set_text(ui.street, rerouting ? "Rerouting..." : s->street);
+    set_text_colour(ui.street, main_col);
 
     const lv_img_dsc_t *then_img = arrow_for_direction(s->then_direction, true);
     bool show_then = ui.landscape && then_img && !arrived && !rerouting;
@@ -1377,7 +1407,7 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     bool has_map = s->mode != NAV_MODE_IDLE;
     set_hidden(ui.idle_clock, has_map);
     set_hidden(ui.tile_map, !has_map);
-    lv_label_set_text(ui.idle_clock, minute < 0 ? "--:--" : hhmm);
+    set_text(ui.idle_clock, minute < 0 ? "--:--" : hhmm);
 
     bool music = s->music_valid;
 
@@ -1408,7 +1438,7 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
             fmt_distance(s->distance_m, num, sizeof(num), &unit);
         }
         lv_label_set_text_fmt(ui.home_dist, "%s%s", num, unit);
-        lv_label_set_text(ui.home_street, s->street);
+        set_text(ui.home_street, s->street);
     }
 
     set_hidden(ui.track, !music);
@@ -1416,21 +1446,21 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     set_hidden(ui.idle_msg, music);
 
     if (music) {
-        lv_label_set_text(ui.track, s->music_title[0] ? s->music_title : "-");
-        lv_label_set_text(ui.artist, s->music_artist);
+        set_text(ui.track, s->music_title[0] ? s->music_title : "-");
+        set_text(ui.artist, s->music_artist);
         /* Violet while it plays, dim when paused: the tile's own hue is what
          * says "playing", so the state is a colour rather than a word. */
-        lv_obj_set_style_text_color(ui.track, s->music_playing ? COL_MUSIC : COL_DIM, 0);
+        set_text_colour(ui.track, s->music_playing ? COL_MUSIC : COL_DIM);
     } else if (!s->connected) {
         /* The name is what the rider has to look for in the phone's Bluetooth
          * list, and this is the only screen shown before there is a phone. */
         lv_label_set_text_fmt(ui.idle_msg, "No phone\n%s", ui.device_name);
     } else if (!s->apple_paired) {
-        lv_label_set_text(ui.idle_msg, "Not paired");
+        set_text(ui.idle_msg, "Not paired");
     } else if (!s->apple_media) {
-        lv_label_set_text(ui.idle_msg, "No media");
+        set_text(ui.idle_msg, "No media");
     } else {
-        lv_label_set_text(ui.idle_msg, "Nothing playing");
+        set_text(ui.idle_msg, "Nothing playing");
     }
 
     draw_brightness(ui.tile_set_val);
@@ -1549,6 +1579,10 @@ static const char *music_state_word(const nav_state_t *s)
     if (!s->apple_subscribed) return "nosub";
     if (s->apple_notifs == 0) return "quiet";
     if (!s->apple_have_title) return "notrack";
+    /* The phone said it cut the title to fit the link. A short title on screen
+     * then means the MTU, not a buffer here, and the two want different
+     * fixes - so they must not both report "ok". */
+    if (s->apple_trunc)       return "cut";
     return "ok";
 }
 
@@ -1556,15 +1590,15 @@ static void draw_music(const nav_state_t *s)
 {
     draw_volume(ui.m_vol_val, s);
     bool music = s->music_valid && s->music_title[0] != '\0';
-    lv_label_set_text(ui.m_title, music ? s->music_title : "Nothing playing");
-    lv_label_set_text(ui.m_artist, s->music_valid ? s->music_artist : "");
+    set_text(ui.m_title, music ? s->music_title : "Nothing playing");
+    set_text(ui.m_artist, s->music_valid ? s->music_artist : "");
     lv_label_set_text(button_label(ui.m_play),
                       s->music_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 }
 
 static void draw_call(const nav_state_t *s)
 {
-    lv_label_set_text(ui.call_who, s->call_name[0] ? s->call_name : "Unknown caller");
+    set_text(ui.call_who, s->call_name[0] ? s->call_name : "Unknown caller");
     /* The phone says which actions the notification allows. Showing a button
      * the phone would refuse is worse than showing none. */
     set_hidden(ui.call_answer, !s->call_can_answer);
@@ -1924,13 +1958,14 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
              * it did and has sent nothing, which on iOS means the per-device
              * notification consent was never given. Those need different
              * answers, so they are shown differently. */
-            lv_label_set_text_fmt(ui.s_tap, "tap %d,%d d%u\ncalls: %s\nmusic: %s r%u f%u/%d",
+            lv_label_set_text_fmt(ui.s_tap, "tap %d,%d d%u\ncalls: %s\nmusic: %s r%u f%u/%d m%u",
                                   (int)ui.last_x, (int)ui.last_y,
                                   (unsigned)backlight_duty(),
                                   !s->apple_ancs ? "none"
                                                  : (s->apple_calls ? "ok" : "quiet"),
                                   music_state_word(s), (unsigned)s->apple_rounds,
-                                  (unsigned)s->apple_fail_step, (int)s->apple_fail_err);
+                                  (unsigned)s->apple_fail_step, (int)s->apple_fail_err,
+                                  (unsigned)s->apple_mtu);
             break;
         case SCR_HOME:
         default:

@@ -25,8 +25,15 @@ enum {
 
 void apple_link_on_connect(struct bt_conn *conn);
 
-/* Call about once a second: retries discovery if the phone was not ready yet. */
+/* Call about once a second: retries discovery if the phone was not ready yet.
+ * No faster - the gap between steps is what keeps this stack from rejecting a
+ * discovery that has not finished. */
 void apple_link_tick(uint32_t now_ms);
+
+/* Call often, from the BLE task: sends whatever media commands the UI has
+ * queued. Separate from the tick because a volume tap cannot wait a second
+ * for an answer, while discovery must not be hurried. */
+void apple_link_service(void);
 void apple_link_on_security_changed(struct bt_conn *conn, uint8_t level, uint8_t err);
 void apple_link_on_disconnect(void);
 

@@ -260,15 +260,27 @@ void nav_state_set_ancs(bool found, uint16_t calls)
 }
 
 void nav_state_set_apple_chain(uint8_t rounds, uint8_t fail_step, int8_t fail_err,
-                               bool have_title)
+                               bool have_title, bool truncated)
 {
     xSemaphoreTake(g_lock, portMAX_DELAY);
     if (g_state.apple_rounds != rounds || g_state.apple_fail_step != fail_step ||
-        g_state.apple_fail_err != fail_err || g_state.apple_have_title != have_title) {
+        g_state.apple_fail_err != fail_err || g_state.apple_have_title != have_title ||
+        g_state.apple_trunc != truncated) {
         g_state.apple_rounds = rounds;
         g_state.apple_fail_step = fail_step;
         g_state.apple_fail_err = fail_err;
         g_state.apple_have_title = have_title;
+        g_state.apple_trunc = truncated;
+        g_state.version++;
+    }
+    xSemaphoreGive(g_lock);
+}
+
+void nav_state_set_mtu(uint16_t mtu)
+{
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (g_state.apple_mtu != mtu) {
+        g_state.apple_mtu = mtu;
         g_state.version++;
     }
     xSemaphoreGive(g_lock);

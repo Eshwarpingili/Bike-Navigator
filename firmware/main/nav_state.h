@@ -22,9 +22,17 @@ enum {
 #define NAV_UNKNOWN_U16 0xFFFFu
 #define NAV_UNKNOWN_U8  0xFFu
 
-#define NAV_STREET_MAX  48
+/* 0x02 is 16 bytes of fixed fields plus the street, and ble_nav's RX_MAX is
+ * 128, so 96 is what fits. 48 was cutting the descriptive instructions -
+ * "3rd exit, right onto NH-65" and longer - mid-word, before the label's own
+ * ellipsis ever saw them. */
+#define NAV_STREET_MAX  96
 #define NAV_TEXT_MAX    16
-#define NAV_MUSIC_MAX   40
+/* Long enough for a real song title. 40 silently cut most of them: the board
+ * showed the first 40 bytes for the whole song and the diagnostic still said
+ * the music chain was fine. AMS can carry ~241 bytes in one notification at
+ * the negotiated MTU, so the only limit here was this number. */
+#define NAV_MUSIC_MAX   120
 #define NAV_CALLER_MAX  28
 /* Route shape ahead of the rider. The phone does the projection - it has the
  * route and the heading and a floating point unit - and sends points already
@@ -99,6 +107,8 @@ typedef struct {
     uint8_t apple_fail_step; /* 0xFF = nothing has failed */
     int8_t apple_fail_err;
     bool apple_have_title;   /* the phone has sent a title at least once */
+    bool apple_trunc;        /* AMS said it cut the value short */
+    uint16_t apple_mtu;      /* what the link actually negotiated */
 
     /* x is right of the way ahead, y is forward, both in route_unit_m metres. */
     int8_t route_x[NAV_ROUTE_MAX];
@@ -151,7 +161,12 @@ void nav_state_set_ancs(bool found, uint16_t calls);
 
 /* How the music chain is getting on, in the few numbers that identify a fault. */
 void nav_state_set_apple_chain(uint8_t rounds, uint8_t fail_step, int8_t fail_err,
-                               bool have_title);
+                               bool have_title, bool truncated);
+
+/* What the link negotiated. A small MTU caps what AMS can send in one go, and
+ * the boot log that used to carry this is only on the diagnostics screen,
+ * which never shows while the link is working. */
+void nav_state_set_mtu(uint16_t mtu);
 
 /* Copy the current state out (thread safe). */
 void nav_state_snapshot(nav_state_t *out);

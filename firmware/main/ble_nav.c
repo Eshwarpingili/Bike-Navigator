@@ -112,7 +112,12 @@ static void on_mtu_exchanged(struct bt_conn *conn, u8_t err, struct bt_gatt_exch
 {
     (void)params;
     if (!err) {
-        logbuf_add("mtu %u", bt_gatt_get_mtu(conn));
+        uint16_t mtu = bt_gatt_get_mtu(conn);
+        logbuf_add("mtu %u", mtu);
+        /* Also on the settings screen: a small MTU caps what AMS can put in
+         * one notification, and this log is only visible on the diagnostics
+         * screen, which by definition never shows while the link is up. */
+        nav_state_set_mtu(mtu);
     }
 }
 
@@ -207,12 +212,24 @@ void ble_nav_task(void *arg)
     hci_driver_init();
     bt_enable(on_bt_ready);
 
+    /* Two cadences on one task. Media commands are drained every 50 ms,
+     * because a thumb on the volume button should not wait a second to be
+     * answered. Discovery keeps its once-a-second step, because the gap
+     * between steps is what stops this stack rejecting a request that has not
+     * finished - the whole reason the step machine exists. */
+    uint32_t last_slow = 0;
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        health_alive(HEALTH_TASK_BLE, now_ms());
-        apple_link_tick(now_ms());
-        if (g_conn != NULL && now_ms() - g_last_activity_ms > KEEPALIVE_MS) {
-            g_last_activity_ms = now_ms();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        uint32_t t = now_ms();
+        apple_link_service();
+        if (t - last_slow < 1000) {
+            continue;
+        }
+        last_slow = t;
+        health_alive(HEALTH_TASK_BLE, t);
+        apple_link_tick(t);
+        if (g_conn != NULL && t - g_last_activity_ms > KEEPALIVE_MS) {
+            g_last_activity_ms = t;
             send_keepalive();
         }
     }

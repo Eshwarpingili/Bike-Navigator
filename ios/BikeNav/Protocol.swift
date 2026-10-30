@@ -170,7 +170,9 @@ enum Packet {
         d.append(g.speedKmh.map { UInt8(clamping: min($0, 254)) } ?? 0xFF)
         d.append(0) // speed limit: not available from MapKit
         d.append(g.thenDirection)
-        d.append(asciiText(g.street, maxBytes: 48))
+        // Matches NAV_STREET_MAX on the board, and 16 + 96 still fits its
+        // 128-byte receive buffer. 48 cut the longer instructions mid-word.
+        d.append(asciiText(g.street, maxBytes: 96))
         return d
     }
 
