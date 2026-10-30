@@ -268,6 +268,7 @@ static struct {
     lv_obj_t *near_bar;    /* fills across the nav screen as the turn arrives */
 
     lv_obj_t *pressed;     /* the control a finger is on, lit until it leaves */
+    lv_coord_t near_target; /* where the approach bar is heading */
     uint32_t last_dist_m;  /* to catch the moment a threshold is crossed */
     uint8_t slide_dir;     /* which instruction the slide belongs to */
     bool slide_seen;
@@ -500,11 +501,29 @@ static void start_pulse(lv_obj_t *o)
  * given the time between them to walk there: without this it ticks forward
  * once a second, which is the single most obviously cheap thing a screen can
  * do. Restarted from wherever it currently is, never from zero. */
-static void glide_width(lv_obj_t *o, lv_coord_t to)
+static void glide_width(lv_obj_t *o, lv_coord_t to, bool snap)
 {
     if (o == NULL) {
         return;
     }
+    /* Snap, never glide, when the instruction changed or the bar was hidden.
+     * Gliding then would run the bar BACKWARDS from the last turn's full width
+     * to the new turn's short one - a warning that appears to retreat - or
+     * forwards from a width left over from whenever it was last visible. */
+    if (snap) {
+        lv_anim_del(o, set_width);
+        ui.near_target = to;
+        lv_obj_set_width(o, to);
+        return;
+    }
+    /* Only a change of destination restarts the animation. Comparing against
+     * the current width instead would restart the full 900 ms on every redraw,
+     * and with music playing the state bumps ten times a second - so the bar
+     * would creep after its target and never arrive. */
+    if (ui.near_target == to) {
+        return;
+    }
+    ui.near_target = to;
     lv_coord_t from = lv_obj_get_width(o);
     if (from == to) {
         return;
@@ -1270,14 +1289,15 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     /* A different instruction has replaced the last one, so it arrives from the
      * right rather than appearing in place. Swapping silently is how a turn you
      * have already taken and the next one look identical. */
-    if (!ui.slide_seen || dir != ui.slide_dir) {
-        if (ui.slide_seen) {
-            start_slide(ui.arrow);
-            start_slide(ui.dist_num);
-        }
+    bool new_turn = !ui.slide_seen || dir != ui.slide_dir;
+    if (new_turn) {
         ui.slide_dir = dir;
-        ui.slide_seen = true;
     }
+    /* The slide itself is started at the end of this function, after the
+     * alignment below. lv_anim applies its first value straight away, and the
+     * unit is positioned by lv_obj_align_to against the number's coordinates -
+     * which translate moves. Sliding first left the "m" parked 46 px to the
+     * right of a number that had already slid home. */
 
     /* The turn is close. One swell of the arrow at 200 m and again at 50 m, and
      * nothing else on the screen moves - which is the whole point of spending
@@ -1302,6 +1322,7 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
         /* Hidden rather than zero-width: a 1 px sliver of amber along the top
          * edge with 900 m still to go would be a warning about nothing. */
         bool near = s->mode != NAV_MODE_BASIC && !arrived && !stale && d < NEAR_FROM_M;
+        bool was_hidden = lv_obj_has_flag(ui.near_bar, LV_OBJ_FLAG_HIDDEN);
         set_hidden(ui.near_bar, !near);
         if (near) {
             uint32_t w = (uint32_t)lv_disp_get_hor_res(NULL);
@@ -1312,7 +1333,8 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
              * rather than as the quiet end of a bar. */
             lv_obj_set_style_bg_color(ui.near_bar, lv_color_mix(turn_col, g_pal.bg, 90), 0);
             lv_obj_set_style_bg_grad_color(ui.near_bar, turn_col, 0);
-            glide_width(ui.near_bar, (lv_coord_t)(w - (w * d / NEAR_FROM_M)));
+            glide_width(ui.near_bar, (lv_coord_t)(w - (w * d / NEAR_FROM_M)),
+                        new_turn || was_hidden);
         }
     }
 
@@ -1351,6 +1373,18 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     if (s->limit_kmh) {
         lv_label_set_text_fmt(ui.limit_num, "%u", s->limit_kmh);
     }
+
+    /* Now that everything has been placed, bring the new instruction in from
+     * the right. The unit travels with the number: it was aligned against the
+     * number's coordinates above, and translate moves those, so sliding only
+     * one of them separates them permanently. */
+    if (new_turn && ui.slide_seen) {
+        start_slide(ui.arrow);
+        start_slide(ui.dist_num);
+        start_slide(ui.dist_unit);
+        start_slide(ui.street);
+    }
+    ui.slide_seen = true;
 
     bool full = s->mode == NAV_MODE_FULL;
     set_hidden(ui.bar, !full);
@@ -1843,6 +1877,13 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
         ui.drawn_light = light;
         set_palette(light);
         apply_theme();
+        /* apply_theme puts every label back to its default colour, and the
+         * draw functions are what re-apply the ones that carry meaning - the
+         * violet track title, the route strip's severity. Without this the
+         * gate below can return before they run, leaving the one channel that
+         * is supposed to be rigid showing the wrong colour until something
+         * else happens to change. */
+        invalidate();
     }
     apply_backlight(light);
 

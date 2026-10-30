@@ -130,6 +130,7 @@ static struct bt_gatt_write_params g_cmd_write;
 static uint8_t g_cmd;
 static volatile bool g_cmd_busy;      /* a media write is waiting for its reply */
 static bool service_media_queue(void);
+static uint8_t g_resub_fails;         /* resubscribes that went nowhere */
 static int8_t g_fail_err;
 
 static void publish_status(void)
@@ -780,6 +781,24 @@ void apple_link_call_action(bool accept)
     g_pending_action = accept ? 1 : 2;
 }
 
+/* Throw away everything discovery found and go round again. The subscribe
+ * params are deliberately NOT cleared: the stack keeps them in its own linked
+ * list until the peer goes away, and zeroing one unlinks everything behind it,
+ * after which an arriving notification has nowhere to land. */
+static void reset_discovery(void)
+{
+    g_rounds++;
+    g_sec_level = (uint8_t)bt_conn_get_security(g_conn);
+    g_services_seen = 0;
+    g_ams_start = g_cts_start = g_ancs_start = 0;
+    g_entity_ccc = g_remote_ccc = g_notif_ccc = g_data_ccc = 0;
+    g_ccc_try = 0;
+    g_ancs_try = 0;
+    g_entity_handle = g_remote_handle = 0;
+    g_notif_handle = g_ctrl_handle = g_data_handle = 0;
+    g_subscribed = false;
+}
+
 void apple_link_tick(uint32_t now_ms)
 {
     if (g_conn == NULL || !g_paired) {
@@ -801,9 +820,21 @@ void apple_link_tick(uint32_t now_ms)
          * rider sees as a song name that works and then stops. */
         if (g_entity_handle && (g_sub_lost || !g_subscribed) &&
             now_ms - g_last_step_ms > 10000) {
+            /* But not for ever. If the handle has gone stale the subscribe
+             * fails every time, and because notif_count is non-zero by then
+             * the full re-probe below never gets a turn either - the board
+             * would retry a dead handle until it was power-cycled. After a few
+             * goes, throw the discovery away and start again from nothing. */
+            if (++g_resub_fails > 3) {
+                g_resub_fails = 0;
+                reset_discovery();
+                next_step(STEP_PROBE);
+                return;
+            }
             next_step(STEP_SUBSCRIBE); /* and the registrations again behind it */
             return;
         }
+        g_resub_fails = 0;
         /* Registered, but no track has ever arrived: ask again. The phone sends
          * a track only when it has one, so a registration made while nothing was
          * playing needs repeating. */
@@ -816,19 +847,7 @@ void apple_link_tick(uint32_t now_ms)
         bool incomplete = (g_entity_handle == 0) || g_notif_count == 0;
         uint32_t wait = g_rounds < MAX_ROUNDS ? 5000 : 20000;
         if (incomplete && now_ms - g_last_step_ms > wait) {
-            g_rounds++;
-            g_sec_level = (uint8_t)bt_conn_get_security(g_conn);
-            g_services_seen = 0;
-            g_ams_start = g_cts_start = g_ancs_start = 0;
-            g_entity_ccc = g_remote_ccc = g_notif_ccc = g_data_ccc = 0;
-            g_ccc_try = 0;
-            g_ancs_try = 0;
-            g_entity_handle = g_remote_handle = 0;
-            g_notif_handle = g_ctrl_handle = g_data_handle = 0;
-            /* The subscribe params stay linked in the stack's own list until the
-             * peer goes away. Clearing them here unlinks the ones behind them
-             * too, and then an arriving notification has nowhere to land. */
-            (void)g_rounds;
+            reset_discovery();
             next_step(STEP_PROBE);
         }
         return;
@@ -994,6 +1013,7 @@ void apple_link_on_connect(struct bt_conn *conn)
     g_subscribed = false;
     g_trunc = false;
     g_cmd_busy = false;
+    g_resub_fails = 0;
     if (g_media_q != NULL) {
         /* Taps aimed at a link that has gone must not be delivered to the next
          * one: the rider pressed next on a song that is no longer playing. */

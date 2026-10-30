@@ -30,6 +30,9 @@ final class Navigator: NSObject, ObservableObject {
     private var offRouteFixes = 0
     private var lastRerouteAt = Date.distantPast
     private var rerouteStartedAt: Date?
+    /// Bumped by every request, and by stopping, so late replies can be
+    /// recognised as belonging to a route that is over.
+    private var routeGeneration: UInt32 = 0
     private var rerouting = false
     private var arrivedAt: Date?
     /// Where the rider was when the board was last sent the shape of the road.
@@ -96,6 +99,10 @@ final class Navigator: NSObject, ObservableObject {
     }
 
     func stop() {
+        // Ends any request still in flight, as far as its reply is concerned.
+        // Without this, a reroute asked for a moment ago comes back and turns
+        // navigation straight back on.
+        routeGeneration &+= 1
         phase = .idle
         route = nil
         destination = nil
@@ -118,8 +125,15 @@ final class Navigator: NSObject, ObservableObject {
         request.destination = destination
         request.transportType = .automobile
 
+        // Every request carries the generation it was made in. A reply that
+        // comes back after the rider ended the route, or after a newer request
+        // was made, belongs to a journey that no longer exists - and without
+        // this it would happily rebuild it: End route, then seconds later the
+        // directions come back on by themselves.
+        routeGeneration &+= 1
+        let generation = routeGeneration
         MKDirections(request: request).calculate { [weak self] response, error in
-            guard let self else { return }
+            guard let self, generation == self.routeGeneration else { return }
             if let route = response?.routes.first {
                 self.rebuild(with: route)
             } else {
