@@ -12,10 +12,22 @@ struct ContentView: View {
         Map(position: $camera) {
             UserAnnotation()
             if let route = nav.route {
-                MapPolyline(route.polyline).stroke(.blue, lineWidth: 6)
+                /* Two strokes, not one. A single flat line is the giveaway of a
+                 * map nobody styled: the dark casing underneath is what keeps
+                 * the route legible when it crosses a motorway of nearly the
+                 * same colour, which is most of the time in a city. */
+                MapPolyline(route.polyline)
+                    .stroke(.black.opacity(0.35), style: StrokeStyle(lineWidth: 11,
+                                                                     lineCap: .round,
+                                                                     lineJoin: .round))
+                MapPolyline(route.polyline)
+                    .stroke(Palette.route, style: StrokeStyle(lineWidth: 6,
+                                                              lineCap: .round,
+                                                              lineJoin: .round))
             }
             if let destination = nav.destination {
                 Marker(destination.name ?? "Destination", coordinate: destination.placemark.coordinate)
+                    .tint(Palette.route)
             }
         }
         .mapControls {
@@ -142,22 +154,71 @@ private struct BottomPanel: View {
 private struct GuidanceCard: View {
     let guidance: Guidance
 
+    /// Rerouting outranks the manoeuvre: the arrow on screen is about to be
+    /// replaced, so it should not be claiming a confident colour meanwhile.
+    private var tint: Color? {
+        guidance.rerouting ? Palette.turnHard : Dir.severity(guidance.direction).colour
+    }
+
+    /// The two moments the board pulses at. Crossing either one is worth a
+    /// haptic, because it is exactly when a rider stops reading and starts
+    /// positioning. Integer so it fires once per crossing, not per GPS fix.
+    private var approachStep: Int {
+        guidance.arrived ? 3 : (guidance.distance <= 50 ? 2 : (guidance.distance <= 200 ? 1 : 0))
+    }
+
     var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: Dir.symbol(guidance.direction))
-                .font(.system(size: 44, weight: .bold))
-                .frame(width: 56)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(guidance.arrived ? "Arrived" : formatDistance(guidance.distance))
-                    .font(.title.bold())
-                Text(guidance.rerouting ? "Rerouting..." : guidance.street)
-                    .lineLimit(2)
-                if let remaining = guidance.remaining, let minutes = guidance.minutesLeft {
-                    Text("\(formatKm(remaining)) · \(minutes) min left")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 16) {
+                Image(systemName: Dir.symbol(guidance.direction))
+                    .font(.system(size: 38, weight: .bold))
+                    .foregroundStyle(tint ?? .primary)
+                    .frame(width: 56, height: 56)
+                    .background((tint ?? .secondary).opacity(0.14), in: RoundedRectangle(cornerRadius: 14))
+                    /* The arrow itself moves when the instruction changes. The
+                     * board does the same thing with a scale pulse; this is the
+                     * phone's version of the same sentence. */
+                    .symbolEffect(.bounce, value: guidance.direction)
+                    .animation(.snappy(duration: 0.25), value: guidance.direction)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(guidance.arrived ? "Arrived" : formatDistance(guidance.distance))
+                        .font(.title.bold())
+                        .foregroundStyle(tint ?? .primary)
+                        /* Counts down digit by digit instead of snapping, so a
+                         * glance catches that it is falling, not just what it
+                         * says. */
+                        .contentTransition(.numericText(countsDown: true))
+                        .animation(.snappy, value: guidance.distance)
+                    Text(guidance.rerouting ? "Rerouting\u{2026}" : guidance.street)
+                        .lineLimit(2)
+                    if let remaining = guidance.remaining, let minutes = guidance.minutesLeft {
+                        Text("\(formatKm(remaining)) · \(minutes) min left")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                Spacer(minLength: 0)
             }
+
+            /* The same bar as the board's, over the same last 400 m. Hidden
+             * until there is something to brace for: a sliver of amber with a
+             * kilometre still to run is a warning about nothing. */
+            if !guidance.arrived, guidance.distance < 400 {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary)
+                        Capsule()
+                            .fill(tint ?? Color.primary)
+                            .frame(width: geo.size.width * approachFraction(guidance.distance))
+                    }
+                }
+                .frame(height: 4)
+                .animation(.linear(duration: 0.4), value: guidance.distance)
+            }
+        }
+        .sensoryFeedback(trigger: approachStep) { _, step in
+            step == 0 ? nil : Dir.severity(guidance.direction).feedback
         }
     }
 }

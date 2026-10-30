@@ -8,6 +8,7 @@ enum Dir {
     static let slightLeft: UInt8 = 2
     static let slightRight: UInt8 = 3
     static let destination: UInt8 = 4
+    static let via: UInt8 = 5
     static let keepLeft: UInt8 = 6
     static let keepRight: UInt8 = 7
     static let left: UInt8 = 8
@@ -82,17 +83,52 @@ enum Dir {
     /// SF Symbol for the in-app card (the board draws its own arrows).
     static func symbol(_ code: UInt8) -> String {
         switch code {
-        case slightLeft: return "arrow.up.left"
-        case slightRight: return "arrow.up.right"
+        case slightLeft, bendLeftSlight: return "arrow.up.left"
+        case slightRight, bendRightSlight: return "arrow.up.right"
         case left, sharpLeft: return "arrow.turn.up.left"
         case right, sharpRight: return "arrow.turn.up.right"
+        case bendLeftSharp, bendLeftSteep: return "arrow.turn.up.left"
+        case bendRightSharp, bendRightSteep: return "arrow.turn.up.right"
         case uTurnLeft: return "arrow.uturn.left"
         case uTurnRight: return "arrow.uturn.right"
         case keepLeft, keepRight, exitLeft, exitRight: return "arrow.triangle.branch"
+        case flyover: return "road.lanes.curved.right"
+        case underpass: return "tunnel"
         case destination: return "mappin.circle.fill"
         case offRoute: return "exclamationmark.triangle.fill"
         case _ where isRoundabout(code): return "arrow.triangle.2.circlepath"
         default: return "arrow.up"
+        }
+    }
+
+    /// How hard the manoeuvre is. The board colours its arrow from exactly this
+    /// ladder (`direction_colour()` in `ui.c`), and the phone has to agree: a
+    /// turn that is red on the handlebars and grey in your hand is worse than
+    /// no colour at all, because it teaches the rider the colour means nothing.
+    ///
+    /// Severity is the *only* thing these colours say. Nothing decorative is
+    /// allowed to borrow them.
+    enum Severity {
+        case arrival    // green
+        case hard       // red: sharp, steep, U-turn, off-route
+        case caution    // amber: roundabouts, exits, flyovers, underpasses
+        case gentle     // blue: slight turns, keeps, gentle bends
+        case ordinary   // no colour; most turns are this
+    }
+
+    static func severity(_ code: UInt8) -> Severity {
+        if isRoundabout(code) { return .caution }
+        switch code {
+        case destination, via: return .arrival
+        case offRoute, sharpLeft, sharpRight, uTurnLeft, uTurnRight,
+             bendLeftSteep, bendRightSteep:
+            return .hard
+        case exitLeft, exitRight, bendLeftSharp, bendRightSharp, flyover, underpass:
+            return .caution
+        case slightLeft, slightRight, keepLeft, keepRight,
+             bendLeftSlight, bendRightSlight:
+            return .gentle
+        default: return .ordinary
         }
     }
 }

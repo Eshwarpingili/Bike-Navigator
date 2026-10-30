@@ -32,8 +32,22 @@
 
 /* Two palettes, chosen by the phone's clock. Both are high contrast: this gets
  * read at a glance, in motion, over a shoulder. */
+/* Two groups of colour, and the difference between them matters more than the
+ * hues do.
+ *
+ * warn / good / accent / red are the SAFETY channel. They mean one thing only -
+ * how hard the manoeuvre ahead is - and direction_colour() is the only place
+ * allowed to choose between them. Spending amber on a music tile would make
+ * amber mean "music" as well as "slow down", and then it means neither.
+ *
+ * music / map are IDENTITY. They say which part of the board you are looking
+ * at, they never change, and their hues are deliberately far from the safety
+ * ones: violet and teal against red, amber, green and blue. A fixed colour in
+ * a fixed place reads as a label; a colour that changes reads as a signal.
+ */
 typedef struct {
     lv_color_t bg, card, text, dim, accent, warn, good, bar, edge;
+    lv_color_t music, map, press;
 } palette_t;
 
 static palette_t g_pal;
@@ -50,6 +64,11 @@ static void set_palette(bool light)
         g_pal.good = lv_color_hex(0x04602F);
         g_pal.bar = lv_color_hex(0xC2CBD6);
         g_pal.edge = lv_color_hex(0x7C8A9A);
+        /* Dark enough to read as text on a white card: 9.6:1 and 5.5:1. In
+         * sunlight the colour has to come from a deep ink, not a bright tint. */
+        g_pal.music = lv_color_hex(0x5B21B6);
+        g_pal.map = lv_color_hex(0x0F766E);
+        g_pal.press = lv_color_hex(0xAEBAC8);
     } else {
         g_pal.bg = lv_color_hex(0x000000);
         g_pal.card = lv_color_hex(0x161A21);
@@ -60,6 +79,10 @@ static void set_palette(bool light)
         g_pal.good = lv_color_hex(0x3DDC84);
         g_pal.bar = lv_color_hex(0x161A21);
         g_pal.edge = lv_color_hex(0x161A21); /* no edge wanted in the dark */
+        /* 6.3:1 and 9.3:1 on the card colour. */
+        g_pal.music = lv_color_hex(0xA78BFA);
+        g_pal.map = lv_color_hex(0x2DD4BF);
+        g_pal.press = lv_color_hex(0x2E3540);
     }
 }
 
@@ -70,6 +93,16 @@ static void set_palette(bool light)
 #define COL_RED    lv_color_hex(0xE53935)
 #define COL_BAR    (g_pal.bar)
 #define COL_ACCENT (g_pal.accent)
+#define COL_MUSIC  (g_pal.music)
+#define COL_MAP    (g_pal.map)
+
+/* How long each one-shot runs. Everything here is triggered by a state change
+ * and finishes on its own: nothing loops, because a loop on this board would
+ * mean software-blending a region out of PSRAM several times a second, for
+ * ever, to say nothing new. */
+#define PRESS_MS  130   /* a tap landed - the only confirmation a glove gets */
+#define SLIDE_MS  220   /* a different instruction has replaced the last one */
+#define PULSE_MS  420   /* the turn is close now */
 
 /* Which face is showing. A ringing phone and a broken link take the screen on
  * their own account, so they are not choices in here - they override at draw
@@ -175,6 +208,25 @@ static struct {
     lv_obj_t *log_label;   /* firmware log, the board's only console */
     unsigned drawn_log;
 
+    /* Identity strips. The route one is the exception that proves the rule: it
+     * carries the severity colour of the turn ahead, so the home screen says
+     * how hard the next manoeuvre is without being opened. */
+    lv_obj_t *strip_nav;
+    lv_obj_t *strip_media;
+    lv_obj_t *strip_clock;
+    lv_obj_t *strip_set;
+    lv_obj_t *near_bar;    /* fills across the nav screen as the turn arrives */
+
+    /* One-shot motion. Each is a deadline, not a tween: the draw already runs
+     * on a tick, so the frame works out where it is from the clock. */
+    lv_obj_t *flash_obj;   /* the control a tap just landed on */
+    uint32_t flash_at;     /* 0 = not yet stamped, so the first frame sets it */
+    uint32_t pulse_until;  /* the arrow swelling because the turn is close */
+    uint32_t slide_until;  /* a new instruction coming in from the right */
+    uint32_t last_dist_m;  /* to catch the moment a threshold is crossed */
+    uint8_t slide_dir;     /* which instruction the slide belongs to */
+    bool slide_seen;
+
     screen_t screen;
     bool drawn_ringing;    /* so a call can restore whatever was on screen */
     screen_t before_call;
@@ -221,7 +273,25 @@ static lv_obj_t *card(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
     lv_obj_set_style_bg_color(o, g_pal.card, 0);
     lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(o, 12, 0);
+    /* Taps are hit-tested from coordinates rather than delivered as LVGL
+     * events, so LVGL never sets this state by itself - ui_update sets and
+     * clears it by hand. Declaring the style here anyway means every control
+     * gets the same confirmation without a line of code at each one. */
+    lv_obj_set_style_bg_color(o, g_pal.press, LV_STATE_PRESSED);
     return o;
+}
+
+/* An identity strip along the top of a tile. Along the top rather than down the
+ * left, where the turn arrow overhangs the tile's own edge by 20 px and would
+ * sit on top of it. */
+static lv_obj_t *tile_strip(lv_obj_t *tile, lv_coord_t tile_w, lv_color_t col)
+{
+    lv_obj_t *e = box(tile, tile_w - 28, 3);
+    lv_obj_set_style_bg_color(e, col, 0);
+    lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(e, 2, 0);
+    lv_obj_align(e, LV_ALIGN_TOP_MID, 0, 5);
+    return e;
 }
 
 /* A card with one symbol centred in it, which is what every control here is.
@@ -266,7 +336,16 @@ static bool hit(lv_obj_t *o, lv_coord_t x, lv_coord_t y)
     }
     lv_area_t a;
     padded_area(o, &a);
-    return x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2;
+    if (!(x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2)) {
+        return false;
+    }
+    /* Every control is reached through here, so recording the tap in this one
+     * place gives all of them the same press feedback - and keeps it honest:
+     * what lights up is the control that actually won the hit test, which is
+     * exactly the thing worth knowing when a tap seems to do the wrong job. */
+    ui.flash_obj = o;
+    ui.flash_at = 0;
+    return true;
 }
 
 /* Says so on the log screen if any two controls on a screen have hit areas that
@@ -328,16 +407,29 @@ static void apply_theme(void)
     for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
         if (on_card[i]) {
             lv_obj_set_style_bg_color(on_card[i], g_pal.card, 0);
+            lv_obj_set_style_bg_color(on_card[i], g_pal.press, LV_STATE_PRESSED);
             lv_obj_set_style_border_color(on_card[i], g_pal.edge, 0);
             lv_obj_set_style_border_width(on_card[i], ui.drawn_light ? 2 : 0, 0);
         }
     }
+    /* The identity strips. The route one is left alone: draw_home sets it from
+     * the turn ahead, and overwriting it here would blank it until the next
+     * instruction arrived. */
+    if (ui.strip_media) lv_obj_set_style_bg_color(ui.strip_media, g_pal.music, 0);
+    if (ui.strip_clock) lv_obj_set_style_bg_color(ui.strip_clock, g_pal.map, 0);
+    if (ui.strip_set)   lv_obj_set_style_bg_color(ui.strip_set, g_pal.edge, 0);
+    if (ui.tile_map)    lv_obj_set_style_text_color(ui.tile_map, g_pal.map, 0);
     lv_obj_set_style_bg_color(ui.bar, g_pal.bar, 0);
     /* The call buttons follow the palette's green and red, and keep white
      * glyphs on both: the daytime green is dark enough that the ordinary text
      * colour would be unreadable on it. */
     lv_obj_set_style_bg_color(ui.call_answer, g_pal.good, 0);
     lv_obj_set_style_bg_color(ui.call_decline, COL_RED, 0);
+    /* These two keep their own colour when pressed, darkened. The card-grey
+     * press would read as the button having gone dead at the exact moment it
+     * matters most. */
+    lv_obj_set_style_bg_color(ui.call_answer, lv_color_darken(g_pal.good, 60), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(ui.call_decline, lv_color_darken(COL_RED, 60), LV_STATE_PRESSED);
     lv_obj_set_style_text_color(button_label(ui.call_answer), lv_color_white(), 0);
     lv_obj_set_style_text_color(button_label(ui.call_decline), lv_color_white(), 0);
 
@@ -487,6 +579,14 @@ void ui_init(const char *device_name)
     ui.nav = box(scr, W, H - 26);
     lv_obj_align(ui.nav, LV_ALIGN_TOP_LEFT, 0, 26);
 
+    /* Closeness as a quantity, not a number to read. It grows from the left
+     * over the last 400 m in the manoeuvre's own severity colour, so the two
+     * things worth knowing - how far, and how hard - are one shape. Along the
+     * very top edge, which is the only band free in both orientations. */
+    ui.near_bar = box(ui.nav, 0, 4);
+    lv_obj_set_style_bg_opa(ui.near_bar, LV_OPA_COVER, 0);
+    lv_obj_align(ui.near_bar, LV_ALIGN_TOP_LEFT, 0, 0);
+
     ui.arrow = tinted_img(ui.nav, COL_TEXT);
     ui.dist_num = label(ui.nav, &lv_font_montserrat_48, COL_TEXT);
     ui.dist_unit = label(ui.nav, &lv_font_montserrat_20, COL_TEXT);
@@ -552,6 +652,9 @@ void ui_init(const char *device_name)
 
     ui.tile_nav = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_nav, LV_ALIGN_TOP_LEFT, MIN_GAP, MIN_GAP);
+    /* Neutral until there is a route: an identity hue sitting beside an amber
+     * arrow would muddy the one channel that has to stay unambiguous. */
+    ui.strip_nav = tile_strip(ui.tile_nav, tw, g_pal.dim);
 
     ui.home_arrow = tinted_img(ui.tile_nav, COL_ACCENT);
     lv_img_set_zoom(ui.home_arrow, 128); /* the nav-screen arrows at half size */
@@ -572,6 +675,7 @@ void ui_init(const char *device_name)
 
     ui.tile_media = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_media, LV_ALIGN_TOP_LEFT, col2, MIN_GAP);
+    ui.strip_media = tile_strip(ui.tile_media, tw, COL_MUSIC);
 
     ui.track = label(ui.tile_media, &lv_font_montserrat_16, COL_TEXT);
     lv_obj_set_width(ui.track, tw - 12);
@@ -598,14 +702,18 @@ void ui_init(const char *device_name)
      * whichever of the two is actually useful at the time. */
     ui.tile_clock = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_clock, LV_ALIGN_TOP_LEFT, MIN_GAP, row2);
+    ui.strip_clock = tile_strip(ui.tile_clock, tw, COL_MAP);
     ui.idle_clock = label(ui.tile_clock, &lv_font_montserrat_48, COL_TEXT);
     lv_obj_center(ui.idle_clock);
-    ui.tile_map = label(ui.tile_clock, &lv_font_montserrat_20, COL_ACCENT);
+    /* Teal, not the accent blue: the accent means a slight turn, and this tile
+     * sits one row under the arrow that uses it. */
+    ui.tile_map = label(ui.tile_clock, &lv_font_montserrat_20, COL_MAP);
     lv_label_set_text(ui.tile_map, LV_SYMBOL_GPS " Map");
     lv_obj_center(ui.tile_map);
 
     ui.tile_set = card(ui.idle, tw, th);
     lv_obj_align(ui.tile_set, LV_ALIGN_TOP_LEFT, col2, row2);
+    ui.strip_set = tile_strip(ui.tile_set, tw, g_pal.edge);
     lv_obj_t *set_icon = label(ui.tile_set, &lv_font_montserrat_28, COL_DIM);
     lv_label_set_text(set_icon, LV_SYMBOL_SETTINGS);
     lv_obj_align(set_icon, LV_ALIGN_CENTER, 0, -14);
@@ -923,6 +1031,10 @@ static lv_color_t direction_colour(uint8_t dir)
     }
 }
 
+/* The last 400 m, as a width. Beyond that there is nothing to brace for and the
+ * bar stays empty rather than creeping for a kilometre. */
+#define NEAR_FROM_M 400u
+
 static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
 {
     char num[16], buf[32];
@@ -932,16 +1044,68 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     lv_color_t main_col = stale ? COL_DIM : COL_TEXT;
 
     uint8_t dir = arrived ? DIR_DESTINATION : s->direction;
+    lv_color_t turn_col = stale ? COL_DIM
+                                : (rerouting ? COL_RED : direction_colour(dir));
+
+    /* A different instruction has replaced the last one, so it arrives from the
+     * right rather than appearing in place. Swapping silently is how a turn you
+     * have already taken and the next one look identical. */
+    if (!ui.slide_seen || dir != ui.slide_dir) {
+        if (ui.slide_seen) {
+            ui.slide_until = now_ms + SLIDE_MS;
+        }
+        ui.slide_dir = dir;
+        ui.slide_seen = true;
+    }
+
+    /* The turn is close. One swell of the arrow at 200 m and again at 50 m, and
+     * nothing else on the screen moves - which is the whole point of spending
+     * the only motion the screen has on these two moments. */
+    uint32_t d = s->distance_m;
+    if (s->mode != NAV_MODE_BASIC && !arrived && d < ui.last_dist_m) {
+        if ((ui.last_dist_m > 200 && d <= 200) || (ui.last_dist_m > 50 && d <= 50)) {
+            ui.pulse_until = now_ms + PULSE_MS;
+        }
+    }
+    ui.last_dist_m = d;
+
+    lv_coord_t slide_x = 0;
+    if (ui.slide_until > now_ms) {
+        /* Cubed ease-out from 44 px: fast arrival, soft landing, no bounce. */
+        uint32_t left = ui.slide_until - now_ms;
+        int32_t p = (int32_t)(left * 100 / SLIDE_MS);          /* 100 -> 0 */
+        slide_x = (lv_coord_t)(44 * p * p * p / 1000000);
+    }
+
     const lv_img_dsc_t *img = arrow_for_direction(dir, false);
     set_hidden(ui.arrow, img == NULL);
     if (img) {
         lv_img_set_src(ui.arrow, img);
         /* Stale data greys everything out, because a confident colour on an
          * instruction that may be out of date is the wrong kind of confident. */
-        lv_obj_set_style_img_recolor(ui.arrow,
-                                     stale ? COL_DIM
-                                           : (rerouting ? COL_RED : direction_colour(dir)), 0);
+        lv_obj_set_style_img_recolor(ui.arrow, turn_col, 0);
+        lv_obj_set_style_translate_x(ui.arrow, slide_x, 0);
+        uint16_t zoom = 256;
+        if (ui.pulse_until > now_ms) {
+            /* Half a sine: out and back once, ending exactly where it started. */
+            uint32_t gone = PULSE_MS - (ui.pulse_until - now_ms);
+            int16_t ang = (int16_t)(gone * 180 / PULSE_MS);
+            zoom = (uint16_t)(256 + (44 * lv_trigo_sin(ang)) / 32767);
+        }
+        lv_img_set_zoom(ui.arrow, zoom);
     }
+    if (ui.near_bar) {
+        /* Hidden rather than zero-width: a 1 px sliver of amber along the top
+         * edge with 900 m still to go would be a warning about nothing. */
+        bool near = s->mode != NAV_MODE_BASIC && !arrived && !stale && d < NEAR_FROM_M;
+        set_hidden(ui.near_bar, !near);
+        if (near) {
+            uint32_t w = (uint32_t)lv_disp_get_hor_res(NULL);
+            lv_obj_set_width(ui.near_bar, (lv_coord_t)(w - (w * d / NEAR_FROM_M)));
+            lv_obj_set_style_bg_color(ui.near_bar, turn_col, 0);
+        }
+    }
+    lv_obj_set_style_translate_x(ui.dist_num, slide_x, 0);
 
     if (arrived) {
         snprintf(num, sizeof(num), "Arrived");
@@ -1047,6 +1211,13 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
         lv_img_set_src(ui.home_arrow, home_img);
         lv_obj_set_style_img_recolor(ui.home_arrow, direction_colour(s->direction), 0);
     }
+    /* The route tile's strip is the turn's severity, so the home screen already
+     * says whether the next manoeuvre needs slowing for. Grey when there is no
+     * route: an idle tile has nothing to be amber about. */
+    if (ui.strip_nav) {
+        lv_obj_set_style_bg_color(ui.strip_nav,
+                                  has_route ? direction_colour(s->direction) : g_pal.dim, 0);
+    }
     set_hidden(ui.home_dist, !has_route);
     set_hidden(ui.home_street, !has_route);
     set_hidden(ui.home_none, has_route);
@@ -1069,7 +1240,9 @@ static void draw_home(const nav_state_t *s, int minute, const char *hhmm)
     if (music) {
         lv_label_set_text(ui.track, s->music_title[0] ? s->music_title : "-");
         lv_label_set_text(ui.artist, s->music_artist);
-        lv_obj_set_style_text_color(ui.track, s->music_playing ? COL_TEXT : COL_DIM, 0);
+        /* Violet while it plays, dim when paused: the tile's own hue is what
+         * says "playing", so the state is a colour rather than a word. */
+        lv_obj_set_style_text_color(ui.track, s->music_playing ? COL_MUSIC : COL_DIM, 0);
     } else if (!s->connected) {
         /* The name is what the rider has to look for in the phone's Bluetooth
          * list, and this is the only screen shown before there is a phone. */
@@ -1431,11 +1604,33 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
     }
     apply_backlight(light);
 
+    /* A tap flash to show or retire, an arrow mid-swell, an instruction still
+     * sliding in: each of those is a reason to draw a frame the state alone
+     * would have skipped. Only while one is actually running, so motion costs
+     * CPU for its own couple of hundred milliseconds and nothing afterwards. */
+    bool animating = ui.flash_obj != NULL ||
+                     (ui.pulse_until > now_ms) || (ui.slide_until > now_ms);
+
     unsigned log_version = logbuf_version();
-    if (s->version == ui.drawn_version && stale == ui.drawn_stale && minute == ui.drawn_minute &&
+    if (!animating &&
+        s->version == ui.drawn_version && stale == ui.drawn_stale && minute == ui.drawn_minute &&
         navigating == ui.drawn_navigating && log_version == ui.drawn_log &&
         ringing == ui.drawn_ringing) {
         return;
+    }
+
+    /* Press feedback. Set on the frame after the tap and cleared a tenth of a
+     * second later: long enough to register as confirmation, short enough that
+     * it never looks like the button is stuck. */
+    if (ui.flash_obj) {
+        if (ui.flash_at == 0) {
+            ui.flash_at = now_ms;
+            lv_obj_add_state(ui.flash_obj, LV_STATE_PRESSED);
+        } else if (now_ms - ui.flash_at >= PRESS_MS) {
+            lv_obj_clear_state(ui.flash_obj, LV_STATE_PRESSED);
+            ui.flash_obj = NULL;
+            ui.flash_at = 0;
+        }
     }
     bool was_navigating = ui.drawn_navigating;
     ui.drawn_log = log_version;
