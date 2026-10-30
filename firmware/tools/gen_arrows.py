@@ -33,13 +33,19 @@ PHI = (1 + 5 ** 0.5) / 2  # 1.6180339887...
 # spike too fine to survive 4 bpp antialiasing at 40 px, and the 108-degree
 # one is so blunt it reads as a chevron.
 STROKE = 0.18             # stroke width, in path units (paths span roughly 1.0)
-HEAD_HALF = STROKE * PHI  # 0.2913
-HEAD_LEN = HEAD_HALF * PHI  # 0.4713
+CORNER_NOMINAL = STROKE / PHI ** 2  # 0.0688, the radius the pen adds back
+HEAD_HALF = STROKE * PHI - CORNER_NOMINAL  # dilated back to 0.2913 when drawn
+HEAD_LEN = (STROKE * PHI) * PHI - CORNER_NOMINAL
 
 # The dim parts - the ring behind a roundabout, the branch not taken - sit at
 # 1/phi^2 of full. Far enough back to read as context, present enough to say
 # what the junction is.
 DIM = 1 / PHI ** 2  # 0.382
+
+# Corner radius, the way Apple rounds a glyph: the shaft already has round
+# caps, so a razor-sharp arrowhead on the end of it looks like two different
+# drawings. One more step down the chain, which at the big size is about 8 px.
+CORNER = CORNER_NOMINAL
 
 # A head needs a straight run to sit on, or it is built from the last sliver
 # of an arc and comes out a lump. One head length, scaled by 1/phi.
@@ -113,10 +119,28 @@ class Shape:
                 tp = [tf(p) for p in pts]
                 d.line(tp, fill=255, width=lw, joint="curve")
                 r = lw / 2
-                for x, y in (tp[0], tp[-1]):
+                for x, y in tp:
                     d.ellipse([x - r, y - r, x + r, y + r], fill=255)
             elif kind == "poly":
-                d.polygon([tf(p) for p in pts], fill=255)
+                tp = [tf(p) for p in pts]
+                r = CORNER * scale
+                # Fill the triangle, then run a round-jointed pen of width 2r
+                # around its own outline. The pen grows the shape by r on every
+                # side and leaves an arc of radius r at each corner, which is
+                # what a rounded corner is.
+                #
+                # The obvious alternative - inset each vertex along its
+                # bisector and stroke that back out - keeps the nominal size,
+                # but on a head this sharp the inset vertices cross each other
+                # and the tip comes out notched. Growing is the version that
+                # cannot self-intersect; HEAD_LEN and HEAD_HALF are nominal
+                # and the drawn head is that triangle dilated by r.
+                d.polygon(tp, fill=255)
+                if r >= 1:
+                    d.line(tp + [tp[0]], fill=255, width=max(1, round(2 * r)),
+                           joint="curve")
+                    for x, y in tp:
+                        d.ellipse([x - r, y - r, x + r, y + r], fill=255)
             elif kind == "circle":
                 (cx, cy), = [tf(pts[0])]
                 r = w * scale
