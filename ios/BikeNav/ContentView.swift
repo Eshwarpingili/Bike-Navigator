@@ -170,7 +170,7 @@ private struct GuidanceCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 16) {
-                Image(systemName: Dir.symbol(guidance.direction))
+                Image(systemName: Symbols.manoeuvre(guidance.direction))
                     .font(.system(size: 38, weight: .bold))
                     .foregroundStyle(tint ?? .primary)
                     .frame(width: 56, height: 56)

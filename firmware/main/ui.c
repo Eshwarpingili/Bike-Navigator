@@ -48,6 +48,12 @@
 typedef struct {
     lv_color_t bg, card, text, dim, accent, warn, good, bar, edge;
     lv_color_t music, map, press;
+    /* Second stop of each vertical gradient. Light falls from above, so every
+     * surface is a shade brighter at its top edge - the whole of the depth
+     * here, and all this panel can afford. A two-stop linear gradient is
+     * computed per line by the draw layer; a blurred shadow would be blended
+     * per pixel out of PSRAM, every frame, for less. */
+    lv_color_t bg_grad, card_grad, press_grad;
 } palette_t;
 
 static palette_t g_pal;
@@ -55,34 +61,44 @@ static palette_t g_pal;
 static void set_palette(bool light)
 {
     if (light) {
-        g_pal.bg = lv_color_hex(0xD8DFE7);
+        g_pal.bg = lv_color_hex(0xE7ECF2);
+        g_pal.bg_grad = lv_color_hex(0xD5DDE7);
         g_pal.card = lv_color_hex(0xFFFFFF);
+        g_pal.card_grad = lv_color_hex(0xF1F4F9);
         g_pal.text = lv_color_hex(0x000000);
         g_pal.dim = lv_color_hex(0x333C47);
-        g_pal.accent = lv_color_hex(0x0A44C4);
-        g_pal.warn = lv_color_hex(0x8A4200);
-        g_pal.good = lv_color_hex(0x04602F);
+        g_pal.accent = lv_color_hex(0x1D4ED8);
+        g_pal.warn = lv_color_hex(0xB45309);
+        g_pal.good = lv_color_hex(0x047857);
         g_pal.bar = lv_color_hex(0xC2CBD6);
         g_pal.edge = lv_color_hex(0x7C8A9A);
         /* Dark enough to read as text on a white card: 9.6:1 and 5.5:1. In
-         * sunlight the colour has to come from a deep ink, not a bright tint. */
+         * sunlight the colour has to come from a deep ink, not a bright tint.
+         * 9.1:1 and 7.7:1 on the card, and still 6.5:1 on a pressed one. */
         g_pal.music = lv_color_hex(0x5B21B6);
-        g_pal.map = lv_color_hex(0x0F766E);
-        g_pal.press = lv_color_hex(0xAEBAC8);
+        g_pal.map = lv_color_hex(0x115E59);
+        g_pal.press = lv_color_hex(0xE6ECF2);
+        g_pal.press_grad = lv_color_hex(0xDAE1EA);
     } else {
-        g_pal.bg = lv_color_hex(0x000000);
-        g_pal.card = lv_color_hex(0x161A21);
+        /* Not pure black any more. A dead-flat #000 behind a card is what made
+         * the night face look like a terminal; a hair of blue at the top gives
+         * the glass somewhere to be. */
+        g_pal.bg = lv_color_hex(0x0C1017);
+        g_pal.bg_grad = lv_color_hex(0x000000);
+        g_pal.card = lv_color_hex(0x1E242E);
+        g_pal.card_grad = lv_color_hex(0x141922);
         g_pal.text = lv_color_hex(0xFFFFFF);
         g_pal.dim = lv_color_hex(0xAAB3BF);
         g_pal.accent = lv_color_hex(0x5AB0FF);
         g_pal.warn = lv_color_hex(0xFFB300);
         g_pal.good = lv_color_hex(0x3DDC84);
-        g_pal.bar = lv_color_hex(0x161A21);
-        g_pal.edge = lv_color_hex(0x161A21); /* no edge wanted in the dark */
-        /* 6.3:1 and 9.3:1 on the card colour. */
+        g_pal.bar = lv_color_hex(0x151A22);
+        g_pal.edge = lv_color_hex(0x2C333F); /* a hairline, not a frame */
+        /* 5.8:1 and 8.7:1 on the card, 4.8:1 at worst on a pressed one. */
         g_pal.music = lv_color_hex(0xA78BFA);
         g_pal.map = lv_color_hex(0x2DD4BF);
-        g_pal.press = lv_color_hex(0x2E3540);
+        g_pal.press = lv_color_hex(0x2A313C);
+        g_pal.press_grad = lv_color_hex(0x222833);
     }
 }
 
@@ -100,9 +116,24 @@ static void set_palette(bool light)
  * and finishes on its own: nothing loops, because a loop on this board would
  * mean software-blending a region out of PSRAM several times a second, for
  * ever, to say nothing new. */
-#define PRESS_MS  130   /* a tap landed - the only confirmation a glove gets */
-#define SLIDE_MS  220   /* a different instruction has replaced the last one */
-#define PULSE_MS  420   /* the turn is close now */
+#define PRESS_MS  120   /* a finger went down - the confirmation a glove gets */
+#define SLIDE_MS  260   /* a different instruction has replaced the last one */
+#define PULSE_MS  460   /* the turn is close now */
+#define NEAR_MS   900   /* the approach bar gliding to its new length */
+
+/* Corner radius. Generous, and the same everywhere: a 12 px corner on a 320 px
+ * screen reads as a box with the edges knocked off, which is what made the old
+ * screens look like a utility rather than an instrument. */
+#define CARD_RADIUS 18
+
+/* Everything a press changes, eased together. Ease-out, because a control
+ * should answer immediately and settle, not accelerate away from the finger. */
+static const lv_style_prop_t g_press_props[] = {
+    LV_STYLE_BG_COLOR, LV_STYLE_BG_GRAD_COLOR,
+    LV_STYLE_TRANSFORM_WIDTH, LV_STYLE_TRANSFORM_HEIGHT,
+    LV_STYLE_PROP_INV
+};
+static lv_style_transition_dsc_t g_press_tr;
 
 /* Which face is showing. A ringing phone and a broken link take the screen on
  * their own account, so they are not choices in here - they override at draw
@@ -217,12 +248,7 @@ static struct {
     lv_obj_t *strip_set;
     lv_obj_t *near_bar;    /* fills across the nav screen as the turn arrives */
 
-    /* One-shot motion. Each is a deadline, not a tween: the draw already runs
-     * on a tick, so the frame works out where it is from the clock. */
-    lv_obj_t *flash_obj;   /* the control a tap just landed on */
-    uint32_t flash_at;     /* 0 = not yet stamped, so the first frame sets it */
-    uint32_t pulse_until;  /* the arrow swelling because the turn is close */
-    uint32_t slide_until;  /* a new instruction coming in from the right */
+    lv_obj_t *pressed;     /* the control a finger is on, lit until it leaves */
     uint32_t last_dist_m;  /* to catch the moment a threshold is crossed */
     uint8_t slide_dir;     /* which instruction the slide belongs to */
     bool slide_seen;
@@ -271,13 +297,24 @@ static lv_obj_t *card(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
 {
     lv_obj_t *o = box(parent, w, h);
     lv_obj_set_style_bg_color(o, g_pal.card, 0);
+    lv_obj_set_style_bg_grad_color(o, g_pal.card_grad, 0);
+    lv_obj_set_style_bg_grad_dir(o, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(o, 12, 0);
-    /* Taps are hit-tested from coordinates rather than delivered as LVGL
-     * events, so LVGL never sets this state by itself - ui_update sets and
-     * clears it by hand. Declaring the style here anyway means every control
-     * gets the same confirmation without a line of code at each one. */
+    lv_obj_set_style_radius(o, CARD_RADIUS, 0);
+    /* Pressed is set by hand - taps are hit-tested from coordinates, so LVGL
+     * never sets the state itself - but the look between the two states is a
+     * style transition, so LVGL eases it over 120 ms on its own timer rather
+     * than the UI redrawing the screen to move it. The control shrinks and
+     * darkens: iOS's gesture, and the only answer a gloved thumb gets.
+     *
+     * Shrink only, never grow. A control that grew under a thumb would paint
+     * into the gap that keeps its hit area clear of its neighbour's. */
     lv_obj_set_style_bg_color(o, g_pal.press, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_grad_color(o, g_pal.press_grad, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_width(o, -3, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_height(o, -3, LV_STATE_PRESSED);
+    lv_obj_set_style_transition(o, &g_press_tr, 0);
+    lv_obj_set_style_transition(o, &g_press_tr, LV_STATE_PRESSED);
     return o;
 }
 
@@ -336,22 +373,134 @@ static bool hit(lv_obj_t *o, lv_coord_t x, lv_coord_t y)
     }
     lv_area_t a;
     padded_area(o, &a);
-    if (!(x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2)) {
-        return false;
-    }
-    /* Every control is reached through here, so recording the tap in this one
-     * place gives all of them the same press feedback - and keeps it honest:
-     * what lights up is the control that actually won the hit test, which is
-     * exactly the thing worth knowing when a tap seems to do the wrong job. */
-    ui.flash_obj = o;
-    ui.flash_at = 0;
-    return true;
+    return x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2;
 }
 
 /* Says so on the log screen if any two controls on a screen have hit areas that
  * overlap. Spacing worked out by hand is exactly the kind of thing that drifts
  * the next time a layout is touched, and the symptom - a button that sometimes
  * does its neighbour's job - is miserable to diagnose from the saddle. */
+/* Every control a tap can land on, for the screen showing. One list, used by
+ * the startup spacing check and by the press highlight - so a control added to
+ * a screen cannot end up checked for overlap but dead to the touch, or lit up
+ * but never checked. */
+#define CONTROLS_MAX 8
+
+static int controls_for(screen_t screen, bool ringing, lv_obj_t **out)
+{
+    int n = 0;
+    if (ringing) {
+        out[n++] = ui.call_answer;
+        out[n++] = ui.call_decline;
+        return n;
+    }
+    switch (screen) {
+        case SCR_HOME:
+            out[n++] = ui.tile_nav;  out[n++] = ui.tile_media;
+            out[n++] = ui.tile_clock; out[n++] = ui.tile_set;
+            break;
+        case SCR_MUSIC:
+            out[n++] = ui.m_back;  out[n++] = ui.m_prev; out[n++] = ui.m_play;
+            out[n++] = ui.m_next;  out[n++] = ui.m_vol_down; out[n++] = ui.m_vol_up;
+            break;
+        case SCR_SETTINGS:
+            out[n++] = ui.s_back;  out[n++] = ui.s_bl_down; out[n++] = ui.s_bl_up;
+            out[n++] = ui.s_vol_down; out[n++] = ui.s_vol_up; out[n++] = ui.s_auto;
+            break;
+        case SCR_MAP:
+            out[n++] = ui.map_back;
+            break;
+        default:
+            break;      /* the nav screen is a read-out; the top bar is the way back */
+    }
+    return n;
+}
+
+/* ---------------- motion ----------------
+ *
+ * All of it runs in lv_anim, which lv_task_handler steps every 20 ms and which
+ * invalidates only the object it is moving. The alternative - recomputing the
+ * screen each frame from ui_update - redraws and re-sends everything to move
+ * one arrow, and ui_update only runs ten times a second anyway, which is a
+ * perfectly good rate for a distance readout and a terrible one for motion.
+ */
+
+static void set_translate_x(void *obj, int32_t v)
+{
+    lv_obj_set_style_translate_x((lv_obj_t *)obj, (lv_coord_t)v, 0);
+}
+
+static void set_zoom(void *obj, int32_t v)
+{
+    lv_img_set_zoom((lv_obj_t *)obj, (uint16_t)v);
+}
+
+static void set_width(void *obj, int32_t v)
+{
+    lv_obj_set_width((lv_obj_t *)obj, (lv_coord_t)v);
+}
+
+/* In from the right. Ease-out: it arrives quickly and settles, which reads as
+ * the instruction being placed rather than thrown. */
+static void start_slide(lv_obj_t *o)
+{
+    if (o == NULL) {
+        return;
+    }
+    lv_anim_del(o, set_translate_x);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, o);
+    lv_anim_set_exec_cb(&a, set_translate_x);
+    lv_anim_set_values(&a, 46, 0);
+    lv_anim_set_time(&a, SLIDE_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
+/* One swell and back. Playback runs out and in rather than using a sine, so
+ * the arrow is guaranteed to finish at exactly the size it started. */
+static void start_pulse(lv_obj_t *o)
+{
+    if (o == NULL) {
+        return;
+    }
+    lv_anim_del(o, set_zoom);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, o);
+    lv_anim_set_exec_cb(&a, set_zoom);
+    lv_anim_set_values(&a, 256, 300);          /* 256 = actual size */
+    lv_anim_set_time(&a, PULSE_MS / 2);
+    lv_anim_set_playback_time(&a, PULSE_MS / 2);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
+}
+
+/* The approach bar. Distance arrives in steps as packets land, so the bar is
+ * given the time between them to walk there: without this it ticks forward
+ * once a second, which is the single most obviously cheap thing a screen can
+ * do. Restarted from wherever it currently is, never from zero. */
+static void glide_width(lv_obj_t *o, lv_coord_t to)
+{
+    if (o == NULL) {
+        return;
+    }
+    lv_coord_t from = lv_obj_get_width(o);
+    if (from == to) {
+        return;
+    }
+    lv_anim_del(o, set_width);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, o);
+    lv_anim_set_exec_cb(&a, set_width);
+    lv_anim_set_values(&a, from, to);
+    lv_anim_set_time(&a, NEAR_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_linear);  /* closing distance is linear */
+    lv_anim_start(&a);
+}
+
 static void check_spacing(const char *screen, lv_obj_t **controls, int count)
 {
     for (int i = 0; i < count; i++) {
@@ -404,12 +553,19 @@ static void apply_theme(void)
                             ui.m_back, ui.s_back, ui.s_auto, ui.map_back };
 
     lv_obj_set_style_bg_color(lv_scr_act(), g_pal.bg, 0);
+    lv_obj_set_style_bg_grad_color(lv_scr_act(), g_pal.bg_grad, 0);
+    lv_obj_set_style_bg_grad_dir(lv_scr_act(), LV_GRAD_DIR_VER, 0);
     for (unsigned i = 0; i < sizeof(on_card) / sizeof(on_card[0]); i++) {
         if (on_card[i]) {
             lv_obj_set_style_bg_color(on_card[i], g_pal.card, 0);
+            lv_obj_set_style_bg_grad_color(on_card[i], g_pal.card_grad, 0);
             lv_obj_set_style_bg_color(on_card[i], g_pal.press, LV_STATE_PRESSED);
+            lv_obj_set_style_bg_grad_color(on_card[i], g_pal.press_grad, LV_STATE_PRESSED);
+            /* A hairline in both faces now, not a 2 px frame by day and none by
+             * night. One pixel of a lighter edge is what separates a card from
+             * its background without drawing a box around it. */
             lv_obj_set_style_border_color(on_card[i], g_pal.edge, 0);
-            lv_obj_set_style_border_width(on_card[i], ui.drawn_light ? 2 : 0, 0);
+            lv_obj_set_style_border_width(on_card[i], 1, 0);
         }
     }
     /* The identity strips. The route one is left alone: draw_home sets it from
@@ -443,7 +599,10 @@ static void apply_theme(void)
             lv_obj_set_style_text_color(on_dim[i], g_pal.dim, 0);
         }
     }
-    lv_obj_set_style_text_color(ui.bar_right, g_pal.good, 0);
+    /* Ordinary text, not green. Green is the severity ladder's word for
+     * "you have arrived"; spending it on the arrival clock would teach the
+     * rider that green sometimes just means a number. */
+    lv_obj_set_style_text_color(ui.bar_right, g_pal.text, 0);
     lv_obj_set_style_img_recolor(ui.home_arrow, g_pal.accent, 0);
     lv_obj_set_style_img_recolor(ui.then_arrow, g_pal.dim, 0);
 }
@@ -556,6 +715,9 @@ void ui_init(const char *device_name)
     lv_coord_t H = lv_disp_get_ver_res(NULL);
 
     memset(&ui, 0, sizeof(ui));
+    /* Before the first card is built: card() attaches this to every control. */
+    lv_style_transition_dsc_init(&g_press_tr, g_press_props, lv_anim_path_ease_out,
+                                 PRESS_MS, 0, NULL);
     ui.device_name = device_name;
     ui.landscape = W > H;
     ui.drawn_version = UINT32_MAX;
@@ -907,17 +1069,24 @@ void ui_init(const char *device_name)
 
     /* Lay everything out now, so the coordinates the check reads are the real
      * ones rather than whatever they were before the first refresh. */
+    /* Gradients and their dithering come out of the same 48 KB LVGL heap as
+     * every widget. When it runs out, lv_obj_create returns NULL and the next
+     * line dereferences it - the exact way this board was bricked once before,
+     * and the one case check_ui_objects.py cannot see, because the pointer is
+     * assigned, just not to anything. So the headroom goes on the record at
+     * every boot, where the log screen can show it. */
+    lv_mem_monitor_t mem;
+    lv_mem_monitor(&mem);
+    logbuf_add("lvgl heap %u%% free, big %u", (unsigned)(100 - mem.used_pct),
+               (unsigned)mem.free_biggest_size);
+
     lv_obj_update_layout(scr);
-    lv_obj_t *home_controls[] = { ui.tile_nav, ui.tile_media, ui.tile_clock, ui.tile_set };
-    lv_obj_t *music_controls[] = { ui.m_back, ui.m_prev, ui.m_play, ui.m_next,
-                                   ui.m_vol_down, ui.m_vol_up };
-    lv_obj_t *set_controls[] = { ui.s_back, ui.s_bl_down, ui.s_bl_up,
-                                 ui.s_vol_down, ui.s_vol_up, ui.s_auto };
-    lv_obj_t *call_controls[] = { ui.call_answer, ui.call_decline };
-    check_spacing("home", home_controls, 4);
-    check_spacing("music", music_controls, 6);
-    check_spacing("set", set_controls, 6);
-    check_spacing("call", call_controls, 2);
+    lv_obj_t *c[CONTROLS_MAX];
+    check_spacing("home", c, controls_for(SCR_HOME, false, c));
+    check_spacing("music", c, controls_for(SCR_MUSIC, false, c));
+    check_spacing("set", c, controls_for(SCR_SETTINGS, false, c));
+    check_spacing("call", c, controls_for(SCR_HOME, true, c));
+    check_spacing("map", c, controls_for(SCR_MAP, false, c));
 }
 
 static void fmt_distance(uint32_t m, char *num, size_t num_cap, const char **unit)
@@ -1052,7 +1221,8 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
      * have already taken and the next one look identical. */
     if (!ui.slide_seen || dir != ui.slide_dir) {
         if (ui.slide_seen) {
-            ui.slide_until = now_ms + SLIDE_MS;
+            start_slide(ui.arrow);
+            start_slide(ui.dist_num);
         }
         ui.slide_dir = dir;
         ui.slide_seen = true;
@@ -1064,18 +1234,10 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     uint32_t d = s->distance_m;
     if (s->mode != NAV_MODE_BASIC && !arrived && d < ui.last_dist_m) {
         if ((ui.last_dist_m > 200 && d <= 200) || (ui.last_dist_m > 50 && d <= 50)) {
-            ui.pulse_until = now_ms + PULSE_MS;
+            start_pulse(ui.arrow);
         }
     }
     ui.last_dist_m = d;
-
-    lv_coord_t slide_x = 0;
-    if (ui.slide_until > now_ms) {
-        /* Cubed ease-out from 44 px: fast arrival, soft landing, no bounce. */
-        uint32_t left = ui.slide_until - now_ms;
-        int32_t p = (int32_t)(left * 100 / SLIDE_MS);          /* 100 -> 0 */
-        slide_x = (lv_coord_t)(44 * p * p * p / 1000000);
-    }
 
     const lv_img_dsc_t *img = arrow_for_direction(dir, false);
     set_hidden(ui.arrow, img == NULL);
@@ -1084,15 +1246,6 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
         /* Stale data greys everything out, because a confident colour on an
          * instruction that may be out of date is the wrong kind of confident. */
         lv_obj_set_style_img_recolor(ui.arrow, turn_col, 0);
-        lv_obj_set_style_translate_x(ui.arrow, slide_x, 0);
-        uint16_t zoom = 256;
-        if (ui.pulse_until > now_ms) {
-            /* Half a sine: out and back once, ending exactly where it started. */
-            uint32_t gone = PULSE_MS - (ui.pulse_until - now_ms);
-            int16_t ang = (int16_t)(gone * 180 / PULSE_MS);
-            zoom = (uint16_t)(256 + (44 * lv_trigo_sin(ang)) / 32767);
-        }
-        lv_img_set_zoom(ui.arrow, zoom);
     }
     if (ui.near_bar) {
         /* Hidden rather than zero-width: a 1 px sliver of amber along the top
@@ -1101,11 +1254,16 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
         set_hidden(ui.near_bar, !near);
         if (near) {
             uint32_t w = (uint32_t)lv_disp_get_hor_res(NULL);
-            lv_obj_set_width(ui.near_bar, (lv_coord_t)(w - (w * d / NEAR_FROM_M)));
-            lv_obj_set_style_bg_color(ui.near_bar, turn_col, 0);
+            /* Dim at the left, full severity at the leading edge, so the end
+             * that is arriving is the end that is loudest. The dim end fades
+             * towards the background rather than towards black: darkening
+             * amber gives brown, which by day reads as dirt on the glass
+             * rather than as the quiet end of a bar. */
+            lv_obj_set_style_bg_color(ui.near_bar, lv_color_mix(turn_col, g_pal.bg, 90), 0);
+            lv_obj_set_style_bg_grad_color(ui.near_bar, turn_col, 0);
+            glide_width(ui.near_bar, (lv_coord_t)(w - (w * d / NEAR_FROM_M)));
         }
     }
-    lv_obj_set_style_translate_x(ui.dist_num, slide_x, 0);
 
     if (arrived) {
         snprintf(num, sizeof(num), "Arrived");
@@ -1122,13 +1280,12 @@ static void draw_nav(const nav_state_t *s, uint32_t now_ms, bool stale)
     lv_obj_update_layout(ui.dist_num); /* align_to needs the new text width */
     lv_obj_align_to(ui.dist_unit, ui.dist_num, LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -8);
 
-    if (rerouting) {
-        lv_label_set_text(ui.street, "Rerouting...");
-        lv_obj_set_style_text_color(ui.street, COL_AMBER, 0);
-    } else {
-        lv_label_set_text(ui.street, s->street);
-        lv_obj_set_style_text_color(ui.street, main_col, 0);
-    }
+    /* The word, not a colour. The arrow is already red while rerouting, and
+     * amber text beside a red arrow was two different severities for one
+     * event. Keeping the severity colours off text also lets them be chosen
+     * purely for how they read as a large glyph. */
+    lv_label_set_text(ui.street, rerouting ? "Rerouting..." : s->street);
+    lv_obj_set_style_text_color(ui.street, main_col, 0);
 
     const lv_img_dsc_t *then_img = arrow_for_direction(s->then_direction, true);
     bool show_then = ui.landscape && then_img && !arrived && !rerouting;
@@ -1469,6 +1626,36 @@ static void go_home(void)
     invalidate(); /* the tap readout moved, even if the screen did not */
 }
 
+/* Finger down. The control lights the moment it is touched rather than when
+ * the finger leaves, which is the whole difference between a screen that feels
+ * responsive and one that feels like it is thinking about it. Nothing is acted
+ * on here: ui_tap still decides what the gesture meant, on release. */
+void ui_press(lv_coord_t x, lv_coord_t y)
+{
+    ui_release();
+    bool ringing = !lv_obj_has_flag(ui.call, LV_OBJ_FLAG_HIDDEN);
+    if (!ringing && !lv_obj_has_flag(ui.diag, LV_OBJ_FLAG_HIDDEN)) {
+        return;                  /* diagnostics are a read-out, not a surface */
+    }
+    lv_obj_t *c[CONTROLS_MAX];
+    int n = controls_for(ui.screen, ringing, c);
+    for (int i = 0; i < n; i++) {
+        if (hit(c[i], x, y)) {
+            ui.pressed = c[i];
+            lv_obj_add_state(c[i], LV_STATE_PRESSED);
+            return;
+        }
+    }
+}
+
+void ui_release(void)
+{
+    if (ui.pressed) {
+        lv_obj_clear_state(ui.pressed, LV_STATE_PRESSED);
+        ui.pressed = NULL;
+    }
+}
+
 ui_action_t ui_tap(lv_coord_t x, lv_coord_t y)
 {
     ui_action_t act = { UI_ACT_NONE, 0 };
@@ -1604,33 +1791,18 @@ void ui_update(const nav_state_t *s, uint32_t now_ms)
     }
     apply_backlight(light);
 
-    /* A tap flash to show or retire, an arrow mid-swell, an instruction still
-     * sliding in: each of those is a reason to draw a frame the state alone
-     * would have skipped. Only while one is actually running, so motion costs
-     * CPU for its own couple of hundred milliseconds and nothing afterwards. */
-    bool animating = ui.flash_obj != NULL ||
-                     (ui.pulse_until > now_ms) || (ui.slide_until > now_ms);
-
+    /* This gate stays exactly as strict as it was. Motion does NOT belong in
+     * it: these draw functions rewrite every label and style on the screen, and
+     * in LVGL that invalidates and re-sends the lot. Running them per animation
+     * frame would push a whole 153 KB frame over SPI to move one arrow, which
+     * is the opposite of smooth. Animation runs in lv_anim instead, stepped by
+     * lv_task_handler at 50 Hz, touching only the object it moves - while this
+     * runs ten times a second, which is all a distance readout needs. */
     unsigned log_version = logbuf_version();
-    if (!animating &&
-        s->version == ui.drawn_version && stale == ui.drawn_stale && minute == ui.drawn_minute &&
+    if (s->version == ui.drawn_version && stale == ui.drawn_stale && minute == ui.drawn_minute &&
         navigating == ui.drawn_navigating && log_version == ui.drawn_log &&
         ringing == ui.drawn_ringing) {
         return;
-    }
-
-    /* Press feedback. Set on the frame after the tap and cleared a tenth of a
-     * second later: long enough to register as confirmation, short enough that
-     * it never looks like the button is stuck. */
-    if (ui.flash_obj) {
-        if (ui.flash_at == 0) {
-            ui.flash_at = now_ms;
-            lv_obj_add_state(ui.flash_obj, LV_STATE_PRESSED);
-        } else if (now_ms - ui.flash_at >= PRESS_MS) {
-            lv_obj_clear_state(ui.flash_obj, LV_STATE_PRESSED);
-            ui.flash_obj = NULL;
-            ui.flash_at = 0;
-        }
     }
     bool was_navigating = ui.drawn_navigating;
     ui.drawn_log = log_version;

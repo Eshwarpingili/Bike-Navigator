@@ -83,11 +83,17 @@ static void on_screen_touch(lv_event_t *e)
         lv_indev_get_point(lv_indev_get_act(), &p);
         pressed_at = t;
         flipped = false;
+        /* Light whatever is under the finger straight away. The action still
+         * waits for CLICKED below; this is only the acknowledgement, and it
+         * belongs to the touch rather than to the release. */
+        ui_press(p.x, p.y);
         /* Only the top-left corner flips the screen. A bag strap or a glove
          * resting on the glass would otherwise turn the display upside down
          * mid-ride, and the rider has no easy way to put it back. */
         flip_allowed = p.x < lv_disp_get_hor_res(NULL) / 3 &&
                        p.y < lv_disp_get_ver_res(NULL) / 3;
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        ui_release();
     } else if (code == LV_EVENT_PRESSING && flip_allowed && !flipped &&
                t - pressed_at > FLIP_HOLD_MS) {
         flipped = true;

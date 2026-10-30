@@ -33,4 +33,11 @@ typedef struct {
 /* Route one tap to whatever is under it. */
 ui_action_t ui_tap(lv_coord_t x, lv_coord_t y);
 
+/* Light the control under a finger, and put it out again. Separate from the
+ * tap because the light belongs to the touch and the action belongs to the
+ * release: a control that only acknowledges a press once the finger has gone
+ * feels like it was thinking about whether to. */
+void ui_press(lv_coord_t x, lv_coord_t y);
+void ui_release(void);
+
 #endif

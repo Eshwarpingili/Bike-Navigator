@@ -154,12 +154,20 @@
  *LV_GRAD_CACHE_DEF_SIZE sets the size of this cache in bytes.
  *If the cache is too small the map will be allocated only while it's required for the drawing.
  *0 mean no caching.*/
-#define LV_GRAD_CACHE_DEF_SIZE 0
+/* The widest gradient here is the screen itself: 320 entries of lv_color_t
+ * plus a byte per stop. Caching it costs under a kilobyte and saves rebuilding
+ * the same map on every refresh, which at 50 Hz is worth paying for. */
+#define LV_GRAD_CACHE_DEF_SIZE 1024
 
 /*Allow dithering the gradients (to achieve visual smooth color gradients on limited color depth display)
  *LV_DITHER_GRADIENT implies allocating one or two more lines of the object's rendering surface
  *The increase in memory consumption is (32 bits * object width) plus 24 bits * object width if using error diffusion */
-#define LV_DITHER_GRADIENT 0
+/* Required, not optional, at this colour depth. RGB565 has 32 steps of blue to
+ * spend on a card 86 px tall, so an undithered subtle gradient arrives as four
+ * visible stripes - which looks worse than the flat fill it replaced. Ordered
+ * dithering is enough; error diffusion costs another buffer and more CPU for a
+ * difference nobody sees on a 2.4 inch panel. */
+#define LV_DITHER_GRADIENT 1
 #if LV_DITHER_GRADIENT
     /*Add support for error diffusion dithering.
      *Error diffusion dithering gets a much better visual result, but implies more CPU consumption and memory when drawing.

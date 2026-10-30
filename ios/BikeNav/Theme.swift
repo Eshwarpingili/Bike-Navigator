@@ -8,14 +8,14 @@ import SwiftUI
 /// ground rather than bright tints, which wash out behind a visor.
 enum Palette {
     static let turnHard = adaptive(light: 0xE53935, dark: 0xE53935)
-    static let turnCaution = adaptive(light: 0x8A4200, dark: 0xFFB300)
-    static let turnGentle = adaptive(light: 0x0A44C4, dark: 0x5AB0FF)
-    static let arrival = adaptive(light: 0x04602F, dark: 0x3DDC84)
+    static let turnCaution = adaptive(light: 0xB45309, dark: 0xFFB300)
+    static let turnGentle = adaptive(light: 0x1D4ED8, dark: 0x5AB0FF)
+    static let arrival = adaptive(light: 0x047857, dark: 0x3DDC84)
 
     /// Identity, never severity. Violet is the music surface on both devices,
     /// teal is the map. They sit far from the turn colours on purpose: a hue
     /// that can mean either "where you are" or "brake" means neither.
-    static let route = adaptive(light: 0x0F766E, dark: 0x2DD4BF)
+    static let route = adaptive(light: 0x115E59, dark: 0x2DD4BF)
     static let media = adaptive(light: 0x5B21B6, dark: 0xA78BFA)
 
     static func adaptive(light: UInt32, dark: UInt32) -> Color {
@@ -70,4 +70,27 @@ extension UIColor {
 func approachFraction(_ metres: Double) -> Double {
     guard metres.isFinite, metres >= 0 else { return 0 }
     return min(1, max(0, 1 - metres / 400))
+}
+
+/// An SF Symbol that is certain to draw. A name iOS does not have renders as
+/// nothing at all - no compiler error, no CI failure, no warning on the device,
+/// just an empty space where the manoeuvre should be. The newer road symbols
+/// are exactly the ones at risk, so each is asked for and checked, and anything
+/// missing falls back to a symbol that has existed since iOS 13.
+enum Symbols {
+    static func resolve(_ name: String, fallback: String) -> String {
+        UIImage(systemName: name) != nil ? name : fallback
+    }
+
+    /// Resolved once; the answer cannot change while the app is running.
+    static let flyover = resolve("road.lanes.curved.right", fallback: "arrow.up.right")
+    static let underpass = resolve("tunnel", fallback: "arrow.down.right")
+
+    static func manoeuvre(_ code: UInt8) -> String {
+        switch code {
+        case Dir.flyover: return flyover
+        case Dir.underpass: return underpass
+        default: return Dir.symbol(code)
+        }
+    }
 }
